@@ -32,7 +32,7 @@ Glossary:
 | Terrain | `soil`, `water`, `rock`, `ruin` (salvageable scrap), `stack` (toxic smokestack). |
 | Pollution band | `toxic` (61–100), `polluted` (21–60), `recovering` (1–20), `clean` (0). |
 | Flora | A plant on a tile: `grass`, `shrub` or `tree`, growing from seedling to mature. |
-| Restored tile | A land tile with pollution 0 and mature flora, or a water tile with pollution 0. |
+| Restored tile | A `soil` tile with pollution 0 that holds mature flora or a building, or a `water` tile with pollution 0. |
 | Restorable tile | Any `soil`, `ruin` or `water` tile. `rock` and `stack` tiles are not counted. |
 | Restoration ratio | restored tiles ÷ restorable tiles, in [0, 1]. |
 | Turn | One full cycle: Preparation → Action → Resolution. |
@@ -47,7 +47,7 @@ I always know when I can act and when the world reacts.
 
 - **R-1.1** WHEN the player starts a new game with a seed and a difficulty, THE SYSTEM SHALL generate the same map, starting resources and random-event sequence for the same seed and difficulty (determinism).
 - **R-1.2** THE SYSTEM SHALL model each turn as the finite state machine `preparation → action → resolution → preparation (next turn)`, with terminal states `victory` and `defeat`.
-- **R-1.3** WHEN a turn enters the `preparation` phase, THE SYSTEM SHALL, in order: increment the turn counter, credit passive Gold income, produce Energy, charge building upkeep, roll at most one random event, and then enter the `action` phase.
+- **R-1.3** WHEN a turn enters the `preparation` phase, THE SYSTEM SHALL, in order: increment the turn counter, credit passive Gold income, produce Energy and pay building upkeep from it, roll at most one random event, and then enter the `action` phase. A new game starts in turn 1's `action` phase with the starting resources.
 - **R-1.4** WHILE the game is in the `action` phase, THE SYSTEM SHALL accept player actions and SHALL NOT advance time until the player ends the turn.
 - **R-1.5** WHEN the player ends the turn, THE SYSTEM SHALL enter `resolution`, apply cleansing, pollution emission, flora growth, flora death and flora spread, evaluate restoration and milestones, evaluate victory and defeat, and then start the next `preparation` phase unless a terminal state was reached.
 - **R-1.6** IF an action or phase trigger is not allowed in the current phase, THEN THE SYSTEM SHALL reject it, leave the state unchanged and emit an `action:rejected` event with a reason code.
@@ -110,7 +110,7 @@ and cannot be built, upgraded or removed.
 - **R-5.6** WHEN a Stack Sealer is placed, THE SYSTEM SHALL mark the stack as sealed so it stops emitting pollution from the next resolution onward.
 - **R-5.7** WHEN the player demolishes a building they built, THE SYSTEM SHALL remove it and credit a refund of ⌊50 %⌋ of the Gold spent on it as new earned Gold.
 - **R-5.8** WHEN the player toggles a building with upkeep, THE SYSTEM SHALL switch it between enabled and disabled; disabled buildings pay no upkeep and have no effect.
-- **R-5.9** WHEN a turn enters `preparation`, THE SYSTEM SHALL charge upkeep for enabled buildings in ascending entity order; IF Energy is insufficient for a building's upkeep, THEN THE SYSTEM SHALL mark that building unpowered for the turn instead of letting Energy go negative.
+- **R-5.9** WHEN a turn enters `preparation`, THE SYSTEM SHALL pay upkeep for enabled buildings in ascending entity order from stored Energy plus this turn's production; IF that pool is insufficient for a building's upkeep, THEN THE SYSTEM SHALL mark that building unpowered for the turn instead of letting Energy go negative.
 
 ## 6. Pollution and cleansing
 
@@ -153,7 +153,7 @@ conditions that match the chosen difficulty.
 
 - **R-9.1** WHEN resolution ends with the restoration ratio at or above the difficulty's win threshold, THE SYSTEM SHALL enter `victory` and show a summary (turns, restored tiles, flora, Gold earned, Harmony score).
 - **R-9.2** WHERE the difficulty has a turn limit, WHEN resolution ends on the last allowed turn without victory, THE SYSTEM SHALL enter `defeat` with reason `time`.
-- **R-9.3** WHERE the difficulty allows collapse, IF the average pollution of restorable tiles is at or above the collapse threshold at the end of 3 consecutive resolutions, THEN THE SYSTEM SHALL enter `defeat` with reason `collapse`.
+- **R-9.3** WHERE the difficulty allows collapse, IF the average pollution of restorable tiles is at or above the starting average plus the difficulty's collapse margin at the end of 3 consecutive resolutions, THEN THE SYSTEM SHALL enter `defeat` with reason `collapse`.
 - **R-9.4** WHERE the difficulty is `gentle`, THE SYSTEM SHALL have no turn limit and no collapse, so young players cannot lose.
 - **R-9.5** THE SYSTEM SHALL keep the balanced difficulty winnable: a scripted greedy strategy SHALL win on a set of fixed seeds within the turn limit, and a passive strategy SHALL NOT win (macro-balance regression test).
 

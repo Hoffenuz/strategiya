@@ -31,13 +31,15 @@ src/
     state.ts               GameState, createGame, cloneState
     selectors.ts           derived read-only views (ratio, tile info, costs)
     systems/*.ts           ECS systems (§3.3)
-    actions.ts             Action union, validateAction, applyAction
+    actions.ts             Action union, quote (validation + price), applyAction
     save.ts                versioned (de)serialization
     sim/bot.ts             scripted strategies for balance simulation
+    grid.ts                coordinates, areas, occupant index
   i18n/                    en.ts (source of keys), uz.ts, index.ts
-  ui/                      DOM HUD, panels, menus, settings, input, audio
-  render/                  palette, sprites, canvas renderer
-  main.ts                  wiring: store → bus → UI / renderer / audio
+  render/                  color (WCAG, hue shift), palette, sprites, renderer
+  ui/                      app (store, dispatch, undo, autosave, views), dom,
+                           settings, theme, achievements, audio, storage
+  main.ts                  entry point
 tests/                     *.test.ts and *.prop.test.ts
 ```
 
@@ -75,7 +77,7 @@ interface World {
 | `GridPosition` | `x, y` | tiles, buildings, flora |
 | `Terrain` | `kind: soil \| water \| rock \| ruin \| stack` | tiles |
 | `PollutionLevel` | `value: 0..100` | tiles |
-| `EcoValue` | `value`, `restored: boolean`, `everRestored: boolean` | tiles |
+| `EcoValue` | `restored: boolean`, `everRestored: boolean` (eco points come from mature flora species) | tiles |
 | `Salvage` | `remaining`, `density: 1..3` | ruin tiles |
 | `ToxicSource` | `sealed: boolean` | stack tiles |
 | `Building` | `type`, `level`, `goldInvested` | buildings |
@@ -97,8 +99,8 @@ one another; they communicate only through state and emitted events.
 | System | Query | Phase | Responsibility |
 |---|---|---|---|
 | `EconomySystem` | `Building + GoldProducer` | preparation | Credit linear Gold income ⟨I_gold⟩ through the ledger. |
-| `EnergySystem` | `EnergyProducer + ActiveState`, `EnergyStorage` | preparation | Recompute E_max, produce energy (capped, curtailment recorded). |
-| `UpkeepSystem` | `EnergyCost + ActiveState` | preparation | Charge upkeep in id order; set `powered`. |
+| `EnergySystem` | `Building + EnergyProducer`, `EnergyStorage` | preparation | Recompute E_max, produce energy; upkeep is paid from this pool first, the rest is stored up to the cap (curtailment recorded). |
+| `UpkeepSystem` | `EnergyCost + ActiveState` | preparation (inside EnergySystem) | Decide in id order which enabled buildings the pool can power; set `powered`. |
 | `RandomEventSystem` | — | preparation | Seeded event roll (§4.9). |
 | `CleansingSystem` | `Cleanser + Building + ActiveState + GridPosition` | resolution | Apply ⟨K_clean⟩ within radius. |
 | `PollutionSystem` | `ToxicSource + GridPosition` | resolution | Emit ⟨P_emit⟩ from unsealed stacks, clamp. |
@@ -107,7 +109,9 @@ one another; they communicate only through state and emitted events.
 | `VictorySystem` | — | resolution | Win / time / collapse checks (R-9). |
 
 Resolution order: Cleansing → Pollution → Growth → Restoration → Victory
-(R-6.6). Preparation order: turn++ → Economy → Energy → Upkeep → RandomEvent.
+(R-6.6). Preparation order: turn++ → Economy → Energy (with Upkeep) → RandomEvent.
+A new game starts directly in turn 1's `action` phase: genesis resources stand in for
+turn 1's preparation.
 
 ### 3.4 Event bus (Event-Driven Architecture)
 
@@ -183,8 +187,9 @@ interface GameState {
   processedTx: string[];      // idempotency
   milestonesReached: number;  // 0..4
   collapseStreak: number;
+  startPollution: number;     // average pollution at genesis (collapse baseline)
   outcome: null | { result: 'victory'|'defeat'; reason: string };
-  stats: { salvaged; planted; built; withered; restoredEver };
+  stats: { salvaged; planted; built; withered; spread; restoredEver; bountyPaid; milestoneGold; sealed };
   journal: string[];          // milestone keys
 }
 ```
@@ -234,15 +239,24 @@ Demolish refund: `⌊goldInvested / 2⌋` (credited as earned).
 
 ### 4.5 Logarithmic energy cap (R-3.5) — ⟨E_max⟩
 
-    E_max(B) = ⌊ α · ln(1 + B) + β ⌋          α = 6, β = 6, B = Σ battery levels
+    E_max(B) = ⌊ α · ln(1 + B) + β ⌋          α = 6, β = 8, B = Σ battery levels
 
 | B | 0 | 1 | 2 | 3 | 5 | 9 |
 |---|---|---|---|---|---|---|
-| E_max | 6 | 10 | 12 | 14 | 16 | 19 |
+| E_max | 8 | 12 | 14 | 16 | 18 | 21 |
 
 `ln(1+B)` replaces `ln(x)` so `B = 0` is defined; diminishing returns keep
-late-game actions scarce. Production is clamped:
-`added = min(E_prod, E_max − current)`, `curtailed += E_prod − added`.
+late-game actions scarce.
+
+Upkeep is drawn from the pool `current + E_prod` first (in entity-id order; a
+building that does not fit sleeps this turn), then the rest is clamped:
+
+    upkeep = Σ upkeep of buildings the pool can power
+    added  = min(E_prod, E_max + upkeep − current)
+    current ← current + added − upkeep           (≤ E_max)
+    produced += added;  consumed += upkeep;  curtailed += E_prod − added
+
+so Invariant 1 holds exactly and curtailed energy never counts as produced.
 
 ### 4.6 Logarithmic cleansing (R-6.3) — ⟨K_clean⟩, ⟨K_water⟩
 
@@ -305,10 +319,10 @@ turn — small next to base income, so luck flavours but never decides a game.
 | Start Gold | 60 | 40 | 30 |
 | Stacks | 2 | 3 | 4 |
 | Win ratio | 0.55 | 0.65 | 0.70 |
-| Turn limit | none | 70 | 55 |
-| Collapse (avg ≥ 85 for 3 turns) | off | on | on |
+| Turn limit | none | 60 | 55 |
+| Collapse margin (avg ≥ start avg + m for 3 turns) | off | m = 12 | m = 10 |
 
-Start Energy = `E_max(0)` = 6 (recorded as produced). Start Gold is recorded
+Start Energy = `E_max(0)` = 8 (recorded as produced). Start Gold is recorded
 as earned. Harmony score:
 `10 · restored + Σ eco(mature flora) + 2 · max(0, 100 − turn)`.
 
@@ -318,8 +332,16 @@ as earned. Harmony score:
 nearest stack when affordable, scrubbers on the most polluted clusters,
 solar when energy-starved, plant the best species a tile tolerates). The
 simulation test (R-9.5) runs it on fixed seeds and asserts it wins
-*balanced* within the limit, while a passive bot (only ends turns) does not
-win. Any constant change must keep this test green.
+*balanced* with at least 10 turns to spare, also wins Gentle and Hard, while a
+passive bot (only ends turns) does not win and never loses on Gentle. Any
+constant change must keep this test green.
+
+Tuning record (20 seeds each, greedy bot): Gentle wins in 29–38 turns,
+Balanced in 33–43 (limit 60), Hard in 38–48 (limit 55). A passive player on
+Balanced collapses between turns 17 and 50 or runs out of time; on Hard it
+collapses by turn ~10. Two changes came out of tuning: β raised from 6 to 8,
+and upkeep paid from production before the cap (otherwise the cap starved
+scrubbers and the bot stalled at ~20 % restored).
 
 ## 5. Error handling
 
