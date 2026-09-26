@@ -253,7 +253,9 @@ export class App {
     this.state = null;
     this.renderer = null;
     clear(this.root);
-    this.closeModal();
+    document.getElementById('overlay')?.remove();
+    this.modalOpen = false;
+    this.listeningFor = null;
     const hasSave = this.loadSave() !== null;
     const screen = h(
       'div',
@@ -347,8 +349,8 @@ export class App {
   }
 
   private startWith(s: GameState, fresh: boolean): void {
-    this.closeModal();
     this.state = s;
+    this.closeModal();
     this.undoStack = [];
     this.log = [];
     this.tool = null;
@@ -890,7 +892,9 @@ export class App {
     this.listeningFor = null;
     if (this.modalOpen) {
       this.modalOpen = false;
-      this.lastFocus?.focus?.();
+      // The title screen may be stale (e.g. language changed in Settings): redraw it.
+      if (!this.state) this.showTitle();
+      else this.lastFocus?.focus?.();
     }
   }
 
@@ -1009,7 +1013,15 @@ export class App {
           h('label', { for: 'set-lang' }, t('settings.language')),
           h(
             'select',
-            { id: 'set-lang', class: 'input', onchange: (e: Event) => this.updateSettings({ lang: (e.target as HTMLSelectElement).value as Lang }) },
+            {
+              id: 'set-lang',
+              class: 'input',
+              onchange: (e: Event) => {
+                this.updateSettings({ lang: (e.target as HTMLSelectElement).value as Lang });
+                this.showSettings();
+                document.getElementById('set-lang')?.focus();
+              },
+            },
             h('option', { value: 'en', selected: st.lang === 'en' }, 'English'),
             h('option', { value: 'uz', selected: st.lang === 'uz' }, "O'zbekcha"),
           ),
