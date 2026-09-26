@@ -215,7 +215,7 @@ export const en = {
   'help.energy': 'Energy: every action costs Energy. It refills each turn from the Sanctuary, Solar Panels and Wind Turbines, up to your capacity. Batteries raise the capacity.',
   'help.pollution': 'Pollution: toxic stacks spread pollution every turn. Seal them with a Stack Sealer. Scrubbers and Purifiers clean an area each turn; plants clean their own tile.',
   'help.plants': 'Plants: grass tolerates the most pollution. Trees need clean soil but grow fast beside clean water. Grown grass spreads by itself as the land heals.',
-  'help.patterns': 'Patterns: cross-hatch with a warning sign = toxic, lines = polluted, dots = recovering, plain = clean. A leaf mark shows a restored tile.',
+  'help.patterns': 'Patterns: cross-hatch = toxic, diagonal lines = polluted, dots = recovering, plain = clean. A leaf mark shows a restored tile.',
   'help.turns': 'Each turn: Preparation (income and energy), Action (you play), Resolution (the world reacts).',
 
   'tutorial.1': 'Welcome, Guardian! Your Sanctuary is the glowing home on the left. Select the Salvage action and click a toxic ruin to earn Gold.',

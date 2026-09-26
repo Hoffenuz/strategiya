@@ -217,7 +217,7 @@ export const uz: Record<TranslationKey, string> = {
   'help.energy': "Energiya: har bir harakat Energiya talab qiladi. U har navbatda Boshpana, Quyosh panellari va Shamol tegirmonlaridan sig'imingizgacha to'ladi. Akkumulyatorlar sig'imni oshiradi.",
   'help.pollution': "Ifloslanish: zaharli mo'rilar har navbat ifloslanish tarqatadi. Ularni Mo'ri muhrlagich bilan yoping. Tozalagichlar har navbat hududni tozalaydi; o'simliklar o'z katagini tozalaydi.",
   'help.plants': "O'simliklar: o't eng ko'p ifloslanishga chidaydi. Daraxtlarga toza tuproq kerak, lekin toza suv yonida tez o'sadi. Yer tuzalgani sari yetilgan o't o'zi tarqaladi.",
-  'help.patterns': "Naqshlar: ogohlantirish belgili to'r = zaharli, chiziqlar = ifloslangan, nuqtalar = tiklanmoqda, oddiy = toza. Barg belgisi tiklangan katakni bildiradi.",
+  'help.patterns': "Naqshlar: to'r = zaharli, qiya chiziqlar = ifloslangan, nuqtalar = tiklanmoqda, oddiy = toza. Barg belgisi tiklangan katakni bildiradi.",
   'help.turns': "Har navbat: Tayyorgarlik (daromad va energiya), Harakat (siz o'ynaysiz), Yakunlash (dunyo javob beradi).",
 
   'tutorial.1': "Xush kelibsiz, Qo'riqchi! Boshpanangiz chapdagi nurli uy. Qayta ishlash harakatini tanlang va Oltin olish uchun zaharli xarobani bosing.",
