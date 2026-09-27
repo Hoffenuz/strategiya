@@ -79,3 +79,14 @@
 
 - [x] **T8.1** `npm run typecheck && npm test && npm run build` all green.
 - [x] **T8.2** Headless browser smoke test: load, start a game, act with the keyboard, end turns, switch to Uzbek, reach the victory screen, 200 % scale and high contrast without horizontal scroll, no console errors (run with Playwright against `vite preview`, desktop and 375 px viewports).
+
+## Wave 9 — Presentation polish (parallel: each pair is independent)
+
+- [x] 🧪 **T9.1** Write `tests/fx.test.ts` before the particle code: pollen target bounded, never more than `FX_MAX` particles, everything expires once sources vanish, nothing spawns without sources, bursts fall under gravity, opacity in [0, 1], ambient sources match the ECS flags. _(R-11.7, R-14.5)_
+- [x] **T9.2** Implement `render/fx.ts` (`FxSim`, `FxLayer`, `sourcesFromState`) and wire it only through bus subscriptions and state snapshots; disable it with reduced motion. _(depends T9.1)_
+- [x] 🧪 **T9.3** Write `tests/icons.test.ts`: every needed glyph exists, maps are rectangular, the SVG path paints exactly the inked pixels. _(R-13.9)_
+- [x] **T9.4** Implement `ui/icons.ts` and replace every Unicode symbol in the top bar, palette reasons, inspector, chronicle, toasts, achievements and arrow key caps. _(depends T9.3)_
+- [x] 🧪 **T9.5** Write `tests/polish.test.ts`: palette groups are contiguous (restore → plant → build → manage), every tool previews the right sprite, `allTileInfo ≡ tileInfo`, every sprite map is valid and the HUD / badge sprites exist. _(R-2.7, R-11.8, R-14.5)_
+- [x] **T9.6** Implement `toolGroup`, `previewSprite`, `allTileInfo`; the renderer's ghost preview and badges; the grouped palette with the tutorial hint; HUD stat icons; the End turn nudge; the title diorama; end-screen art. _(depends T9.5; R-11.8, R-11.10, R-11.11)_
+- [x] **T9.7** Layout fixes: tutorial docked in the side column, toasts bottom-right, dialog focus order, "welcome back" chronicle entry, floaters kept inside the canvas, mobile top bar (icon buttons, 2 × 2 stats plus a progress row). _(R-11.9, R-13.10, R-13.11)_
+- [x] **T9.8** Headless browser pass (Playwright): 1440 × 900 and 390 × 844, high contrast at 200 % without horizontal scroll, Uzbek, keyboard-only play (salvage, undo, end turn, menu), particle canvas empty with reduced motion, no console errors.

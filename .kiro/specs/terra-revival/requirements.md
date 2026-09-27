@@ -65,6 +65,7 @@ with mouse, touch or keyboard.
 - **R-2.4** THE SYSTEM SHALL show, for every tool, its Gold cost and Energy cost for the selected tile before the player confirms, and SHALL mark tools the player cannot afford or cannot use on that tile as disabled, with a text reason.
 - **R-2.5** IF the player targets a coordinate outside the grid, THEN THE SYSTEM SHALL reject the action with reason `out_of_bounds`.
 - **R-2.6** THE SYSTEM SHALL allow the full game to be played with the keyboard alone (cursor movement, tool selection, activation, end turn, undo, menus).
+- **R-2.7** THE SYSTEM SHALL group the action palette by purpose (Restore, Plant, Build, Manage) under visible headings, and WHEN a tutorial step asks for a specific action, THE SYSTEM SHALL mark that action with a dashed outline and scroll it into view inside the palette without scrolling the page.
 
 ## 3. Resources: Gold and Energy
 
@@ -159,7 +160,7 @@ conditions that match the chosen difficulty.
 
 ## 10. Persistence
 
-- **R-10.1** WHEN a turn enters the `action` phase, THE SYSTEM SHALL autosave the game state to browser storage.
+- **R-10.1** WHEN a game starts, an action is applied, an action is undone or a turn enters the `action` phase, THE SYSTEM SHALL autosave the game state to browser storage.
 - **R-10.2** WHEN the player chooses Continue, THE SYSTEM SHALL restore the saved state exactly (a save→load round trip is lossless).
 - **R-10.3** IF browser storage is unavailable or the save is corrupt or from an incompatible version, THEN THE SYSTEM SHALL keep running, hide Continue and not crash.
 - **R-10.4** THE SYSTEM SHALL persist settings (language, scale, contrast, motion, sound, key bindings) and unlocked achievements separately from the game save.
@@ -172,6 +173,11 @@ conditions that match the chosen difficulty.
 - **R-11.4** THE SYSTEM SHALL show an opening story, a step-by-step tutorial for the first turns that can be skipped, and Guardian's journal entries at milestones.
 - **R-11.5** THE SYSTEM SHALL unlock achievements (e.g. First Sprout, Sun Catcher, Stack Sealed, Clean Waters, Forest Guardian) and show them in the menu.
 - **R-11.6** WHERE sound is enabled, THE SYSTEM SHALL play short synthesized cues for key events.
+- **R-11.7** WHERE reduced motion is off, THE SYSTEM SHALL show ambient particles that mirror the ecosystem (smog rising from unsealed stacks, pollen drifting over restored tiles), short bursts for salvage, cleanup, planting, growth, restoration and sealing, and a petal shower at milestones and on victory. Particles SHALL live on a separate layer that never receives input, and no more than 240 SHALL exist at once.
+- **R-11.8** WHILE a tool is selected, THE SYSTEM SHALL preview it on the tile under the cursor: the translucent building or seedling it would add when the action is allowed, and a badge that is a green check when allowed and a red cross when not (shape and color, R-13.2).
+- **R-11.9** WHEN a saved game is continued, THE SYSTEM SHALL greet the Guardian in the chronicle with the current turn instead of reporting a turn's income.
+- **R-11.10** WHILE the game is in the `action` phase with no Energy left, THE SYSTEM SHALL mark the End turn button with a soft glow, or a static ring when reduced motion is on.
+- **R-11.11** THE SYSTEM SHALL open with a title diorama that tells the arc of the game from left to right (toxic stack and ruin → sealer and scrubber → solar and wind → grass, shrub and trees) over ground that blends the three world palettes.
 
 ## 12. Localization
 
@@ -189,6 +195,9 @@ conditions that match the chosen difficulty.
 - **R-13.6** THE SYSTEM SHALL announce the result of each action and each turn summary through an ARIA live region for screen readers.
 - **R-13.7** THE SYSTEM SHALL keep a clear visual hierarchy: resources top, map centre, tools and inspector at the side, log at the bottom; no decorative element may overlap information.
 - **R-13.8** THE SYSTEM SHALL provide visible keyboard focus indicators on every interactive control.
+- **R-13.9** THE SYSTEM SHALL draw every interface icon (buttons, reasons, log marks, inspector states, achievements, arrow key caps) from its own pixel icon set colored by the surrounding text, and SHALL NOT depend on emoji or symbol fonts that may be missing on the player's system.
+- **R-13.10** WHEN tutorial tips or achievement toasts are shown, THE SYSTEM SHALL place them outside the map (tips docked above the action palette, toasts in a bottom corner) so they never cover map tiles or the top-bar controls.
+- **R-13.11** WHEN a dialog opens, THE SYSTEM SHALL move focus to its most meaningful control: the selected option, else an explicitly marked field, else the primary action.
 
 ## 14. Non-functional: quality and architecture
 
@@ -196,5 +205,5 @@ conditions that match the chosen difficulty.
 - **R-14.2** THE SYSTEM SHALL expose game progression only through the pure reducer `applyAction(state, action) → { state, events }` which does not mutate its input.
 - **R-14.3** THE SYSTEM SHALL verify the economy invariants (R-3.9–R-3.11) with property-based tests using fast-check over random action and event sequences.
 - **R-14.4** THE SYSTEM SHALL compile under TypeScript `strict` mode with zero errors and pass all tests before release.
-- **R-14.5** THE SYSTEM SHALL render the map at 60 fps on a mid-range laptop by redrawing only when state, cursor or animation changes.
+- **R-14.5** THE SYSTEM SHALL render the map at 60 fps on a mid-range laptop by redrawing only when state, cursor or animation changes, and SHALL run the particle layer at no more than 30 fps and only while particles or ambient sources exist.
 - **R-14.6** THE SYSTEM SHALL work in current desktop and mobile browsers at viewport widths down to 360 px.

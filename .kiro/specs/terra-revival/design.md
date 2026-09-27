@@ -36,9 +36,11 @@ src/
     sim/bot.ts             scripted strategies for balance simulation
     grid.ts                coordinates, areas, occupant index
   i18n/                    en.ts (source of keys), uz.ts, index.ts
-  render/                  color (WCAG, hue shift), palette, sprites, renderer
+  render/                  color (WCAG, hue shift), palette, sprites, renderer,
+                           fx (particle simulation + layer)
   ui/                      app (store, dispatch, undo, autosave, views), dom,
-                           settings, theme, achievements, audio, storage
+                           icons (pixel SVG icon set), settings, theme,
+                           achievements, audio, storage
   main.ts                  entry point
 tests/                     *.test.ts and *.prop.test.ts
 ```
@@ -391,7 +393,11 @@ failures print the seed and path for replay (`fc.assert(..., { seed, path })`).
 
 Other test layers: unit tests for ECS queries and the transition table,
 a contrast test over theme tokens (R-13.1), an i18n completeness test
-(R-12.3, backed by the type check), and the macro-balance simulation (R-9.5).
+(R-12.3, backed by the type check), the macro-balance simulation (R-9.5),
+and presentation tests for the pure parts of the UI: particle budget,
+expiry, opacity bounds and ambient sources (`fx.test.ts`), icon maps and
+their SVG paths (`icons.test.ts`), sprite maps, palette groups, placement
+previews and `allTileInfo ≡ tileInfo` (`polish.test.ts`).
 
 ## 7. Rendering and UI
 
@@ -410,3 +416,46 @@ a contrast test over theme tokens (R-13.1), an i18n completeness test
   activate, endTurn, undo, tool1..tool9, cancel }`, remappable with
   conflict detection (R-13.5).
 - Audio: WebAudio oscillators (no asset files), subscribed to the bus.
+
+### 7.1 Particle layer (R-11.7, R-14.5)
+
+A second canvas (`canvas.fx`, `pointer-events: none`) sits exactly over the map
+canvas with the same pixel size. `render/fx.ts` splits it in two:
+
+- `FxSim` — pure and DOM-free, so it is unit-tested. Particles live in tile
+  units: `{ kind, x, y, vx, vy, age, life, size, color, phase }`.
+  `step(dt)` clamps `dt` to 0.1 s, integrates, drops expired particles and
+  trickles ambient particles in (at most `⌈8·dt⌉` per step, so a loaded map
+  never "pops").
+- `FxLayer` — paints the simulation snapped to the art-pixel grid
+  (1 art pixel = tile / 16), at most 30 fps, and stops its animation frame as
+  soon as nothing moves or its canvas leaves the document.
+
+| Kind | Source | Motion | Life |
+|---|---|---|---|
+| pollen | restored tiles, target `min(36, ⌊restored / 3⌋)` | slow drift with sine sway | 4–8 s |
+| smog | each unsealed stack, one puff per 0.26 s, ≤ 8 per stack | rises, slows, grows 1→3 px | 1.8–2.8 s |
+| spark / leaf / drop | bus events (salvage, build, seal / plant, mature, spread, restore / cleanup) | radial burst under gravity | 0.5–1.4 s |
+| petal | `ecosystem:milestone` (45), `game:won` (160) | falls with sway across the map | 4–7 s |
+
+Budget: at most `FX_MAX = 240` particles; further spawns are dropped.
+Opacity is `min(age / 0.25, (life − age) / (0.35 · life))`, clamped to [0, 1].
+Ambient sources come from `sourcesFromState(state)` (the `EcoValue.restored`
+flags and unsealed `ToxicSource`s) after every state change. With reduced
+motion on, the layer is disabled: no particles, no frames, an empty canvas.
+
+### 7.2 Icon set and previews (R-11.8, R-13.9, R-13.10)
+
+- `ui/icons.ts` holds 8–9 px character maps (`'#'` = ink). `iconPath` turns
+  every horizontal run into one SVG sub-path, painted with `currentColor` and
+  `shape-rendering: crispEdges`, so icons inherit contrast-checked text colors
+  and never depend on emoji or symbol fonts.
+- The renderer receives `ghost: { sprite, ok }` for the selected tool on the
+  cursor tile: `previewSprite(tool)` (building, or the species seedling) is
+  drawn at 60 % opacity only when `quote(...).ok`; a 7 × 7 badge is always
+  drawn in the tile's lower-left corner (check = allowed, cross = rejected).
+- `allTileInfo(state)` computes every tile's view with one occupant index, so a
+  full map redraw costs one pass over the entities instead of one per tile.
+- Tutorial tips are docked at the top of the side column; toasts rise from
+  the bottom-right corner. The palette is grouped by `toolGroup(tool)`
+  (`restore`, `plant`, `build`, `manage`).
