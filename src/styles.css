@@ -79,6 +79,22 @@ h2 {
   white-space: nowrap;
 }
 
+/* Pixel icons (src/ui/icons.ts) inherit the contrast-checked text color. */
+.ico {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  flex: none;
+  vertical-align: -0.125em;
+  margin-right: 0.4em;
+}
+.ico.after {
+  margin: 0 0 0 0.45em;
+}
+.ico.key-ico {
+  margin: 0;
+}
+
 /* ───────── buttons & inputs ───────── */
 .btn {
   font: inherit;
@@ -174,10 +190,18 @@ kbd {
     radial-gradient(ellipse at 90% -10%, rgba(200, 66, 59, 0.16), transparent 55%),
     var(--bg);
 }
-.title-art {
-  width: min(92vw, 512px);
-  height: auto;
-  aspect-ratio: 64 / 24;
+.title-art-wrap {
+  position: relative;
+  width: min(92vw, 640px);
+  aspect-ratio: 10 / 3;
+  filter: drop-shadow(0 6px 0 rgba(0, 0, 0, 0.35));
+}
+.title-art,
+.title-fx {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   image-rendering: pixelated;
 }
 .title {
@@ -275,10 +299,10 @@ kbd {
 }
 .stat.progress {
   grid-template-areas:
-    'label value'
-    'bar bar'
-    'note note';
-  grid-template-columns: 1fr auto;
+    'icon label value'
+    'icon bar bar'
+    'icon note note';
+  grid-template-columns: auto 1fr auto;
   flex: 2 1 12rem;
 }
 .stat.progress .bar {
@@ -319,13 +343,32 @@ kbd {
   gap: 0.5rem;
   align-items: center;
 }
+.top-actions .btn {
+  white-space: nowrap;
+}
 .end-turn {
   font-size: 1.05rem;
+}
+/* Out of Energy: a soft glow invites the player to end the turn. */
+.end-turn.nudge {
+  animation: nudge 1.8s ease-in-out infinite;
+}
+@keyframes nudge {
+  0%,
+  100% {
+    box-shadow: 0 3px 0 rgba(0, 0, 0, 0.45), 0 0 0 0 rgba(255, 209, 102, 0);
+  }
+  50% {
+    box-shadow: 0 3px 0 rgba(0, 0, 0, 0.45), 0 0 0 5px rgba(255, 209, 102, 0.55);
+  }
+}
+.reduced-motion .end-turn.nudge {
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.45), 0 0 0 3px var(--focus);
 }
 
 .play {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(17rem, 24rem);
+  grid-template-columns: minmax(0, 1fr) minmax(17rem, 25.5rem);
   gap: var(--gap);
   align-items: start;
 }
@@ -341,6 +384,16 @@ kbd {
   box-shadow: 0 6px 0 rgba(0, 0, 0, 0.4);
   max-width: min(100%, calc((100vh - 13rem) * 4 / 3));
   margin: 0 auto;
+  position: relative;
+}
+/* Particle layer (src/render/fx.ts): same pixel grid as the map, never takes input. */
+.fx {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  image-rendering: pixelated;
 }
 .map {
   width: 100%;
@@ -425,6 +478,7 @@ kbd {
   column-gap: 0.4rem;
   cursor: pointer;
   min-height: 3.2rem;
+  position: relative;
 }
 .tool:hover {
   border-color: var(--border);
@@ -434,9 +488,38 @@ kbd {
   background: var(--bg);
   box-shadow: inset 0 0 0 1px var(--focus);
 }
-.tool.selected .tool-name::after {
-  content: ' ◀';
-  color: var(--focus);
+/* Selection is also a shape: a corner tab, not only a border color. */
+.tool.selected::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 0.7rem;
+  height: 0.7rem;
+  background: var(--focus);
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+}
+.tool-group {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.45rem 0 0.05rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--textMuted);
+}
+.tool-group:first-child {
+  margin-top: 0;
+}
+.tool-group::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+  opacity: 0.6;
 }
 .tool-icon {
   grid-area: icon;
@@ -527,8 +610,13 @@ kbd {
   font-size: 0.9rem;
 }
 .log-list li {
+  display: flex;
+  align-items: flex-start;
   padding: 0.2rem 0.4rem;
   border-left: 3px solid transparent;
+}
+.log-list li .ico {
+  margin-top: 0.2em;
 }
 .log-list li + li {
   border-top: 1px solid rgba(255, 255, 255, 0.07);
@@ -536,23 +624,18 @@ kbd {
 .log-good {
   border-left-color: var(--good) !important;
 }
-.log-good::before {
-  content: '✓ ';
+.log-good .ico {
   color: var(--good);
 }
 .log-bad {
   border-left-color: var(--bad) !important;
 }
-.log-bad::before {
-  content: '⚠ ';
+.log-bad .ico {
   color: var(--bad);
 }
 .log-turn {
   font-weight: 600;
   color: var(--energy);
-}
-.log-turn::before {
-  content: '◆ ';
 }
 
 /* ───────── overlays ───────── */
@@ -619,6 +702,17 @@ kbd {
 .end-stats .score {
   color: var(--gold);
   font-size: 1.3rem;
+}
+.end-art {
+  display: flex;
+  justify-content: center;
+  gap: 0.25rem;
+  margin: 0 0 0.5rem;
+}
+.end-art img {
+  width: 48px;
+  height: 48px;
+  image-rendering: pixelated;
 }
 
 .choices {
@@ -740,18 +834,13 @@ kbd {
 }
 
 /* ───────── tutorial & toasts ───────── */
+/* Docked at the top of the side column: tips never cover the map (R-13.10). */
 .tutorial {
-  position: fixed;
-  left: 50%;
-  bottom: 16px;
-  transform: translateX(-50%);
-  width: min(calc(100% - 32px), 34rem);
   background: var(--panelRaised);
   border: 3px solid var(--focus);
   border-radius: 10px;
   padding: 0.8rem 1rem;
-  z-index: 10;
-  box-shadow: 0 8px 0 rgba(0, 0, 0, 0.5);
+  box-shadow: 0 6px 0 rgba(0, 0, 0, 0.4);
 }
 .tutorial p {
   margin: 0 0 0.6rem;
@@ -760,28 +849,44 @@ kbd {
   justify-content: flex-end;
 }
 .tutorial.minimized {
-  width: auto;
-  max-width: calc(100% - 32px);
-  left: auto;
-  right: 16px;
-  transform: none;
-  opacity: 0.92;
+  border-width: 2px;
+  padding: 0.5rem 0.75rem;
+}
+.tutorial.minimized p {
+  margin: 0;
+  font-size: 0.9rem;
 }
 .tutorial.minimized .row {
   display: none;
 }
+/* The tool a tutorial step talks about: dashed outline (shape) plus a soft pulse. */
+.tool.hinted {
+  border-color: var(--focus);
+  border-style: dashed;
+  animation: hint 1.4s ease-in-out infinite;
+}
+@keyframes hint {
+  50% {
+    box-shadow: 0 0 0 3px rgba(255, 209, 102, 0.45);
+  }
+}
 
+/* Toasts rise from the bottom-right corner, away from the top-bar controls. */
 .toasts {
   position: fixed;
-  top: 16px;
   right: 16px;
+  bottom: 16px;
   display: flex;
   flex-direction: column;
+  align-items: flex-end;
   gap: 0.5rem;
   z-index: 30;
   max-width: calc(100% - 32px);
+  pointer-events: none;
 }
 .toast {
+  display: flex;
+  align-items: center;
   background: var(--panelRaised);
   border: 2px solid var(--gold);
   color: var(--text);
@@ -791,9 +896,14 @@ kbd {
   box-shadow: 0 4px 0 rgba(0, 0, 0, 0.5);
   animation: toast-in 240ms ease-out;
 }
+.toast .ico.gold {
+  color: var(--gold);
+  width: 1.2em;
+  height: 1.2em;
+}
 @keyframes toast-in {
   from {
-    transform: translateY(-8px);
+    transform: translateY(8px);
     opacity: 0;
   }
 }
@@ -827,14 +937,32 @@ kbd {
   }
   .stat.progress {
     grid-column: span 2;
+    order: 5;
   }
   .stat-value {
     font-size: 1.1rem;
   }
   .top-actions {
     display: grid;
-    grid-template-columns: 1fr 2fr auto auto;
+    grid-template-columns: auto 1fr auto auto;
     gap: 6px;
+    width: 100%;
+  }
+  /* Undo and Menu become icon buttons; their text stays for screen readers. */
+  .top-actions .hide-sm {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  .top-actions .btn:not(.end-turn) .ico {
+    margin: 0;
+  }
+  .toasts {
+    left: 16px;
+    align-items: stretch;
   }
   .stat .icon {
     width: 1.5rem;

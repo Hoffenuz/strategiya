@@ -449,6 +449,64 @@ export const SPRITES: Record<string, string[]> = {
   leaf: ['..kk', '.kLk', 'kGGk', 'kk..'],
   zz: ['kkk.....', '..k.....', '.k..kkk.', 'kkk...k.', '.....k..', '....kkk.'],
   pause: ['kk.kk', 'kk.kk', 'kk.kk', 'kk.kk'],
+  // HUD stat icons: turn clock, restored land, average pollution.
+  hourglass: [
+    '................',
+    '...kkkkkkkkkk...',
+    '...kNNNNNNNNk...',
+    '...kkkkkkkkkk...',
+    '....kwwwwwwk....',
+    '....kyyyyyyk....',
+    '.....kyyyyk.....',
+    '......kyyk......',
+    '......kyyk......',
+    '.....kwyywk.....',
+    '....kwwyywwk....',
+    '....kyyyyyyk....',
+    '...kkkkkkkkkk...',
+    '...kNNNNNNNNk...',
+    '...kkkkkkkkkk...',
+    '................',
+  ],
+  sprout: [
+    '................',
+    '................',
+    '.........kkk....',
+    '........kLLGk...',
+    '..kkk..kLGGGk...',
+    '.kLLGk.kGGGk....',
+    '.kGGGGkkGGk.....',
+    '..kgGGGkGk......',
+    '...kkggGGk......',
+    '.....kkGgk......',
+    '.......kGk......',
+    '.......kGk......',
+    '...kkkkkGkkkkk..',
+    '..knNNNNNNNNNnk.',
+    '...kkkkkkkkkkk..',
+    '................',
+  ],
+  smog: [
+    '................',
+    '................',
+    '.....kkkk.......',
+    '....kSSSSk.kkk..',
+    '..kkSSSSSSkSSSk.',
+    '.kSSSSSSSSSSSSSk',
+    'kSSsSSSSSSsSSSSk',
+    'ksssssssssssssk.',
+    '.kkkkkkkkkkkkk..',
+    '................',
+    '...kk....kk.....',
+    '..ktPk..ktPk..kk',
+    '..kPPk..kPPk.ktk',
+    '...kk....kk..kPk',
+    '..............k.',
+    '................',
+  ],
+  // Placement preview badges: valid = green check, invalid = red cross (shape + color, R-13.2).
+  okBadge: ['.kkkkk.', 'kGGGGwk', 'kGGGwGk', 'kwGwGGk', 'kGwGGGk', 'kGGGGGk', '.kkkkk.'],
+  noBadge: ['.kkkkk.', 'kwrrrwk', 'krwrwrk', 'krrwrrk', 'krwrwrk', 'kwrrrwk', '.kkkkk.'],
 };
 
 const cache = new Map<string, HTMLCanvasElement>();
@@ -476,8 +534,19 @@ export function spriteCanvas(name: string, colors: Record<string, string> = SPRI
   return c;
 }
 
-/** A crisp data-URL icon for DOM buttons. */
+const urlCache = new Map<string, string>();
+
+/** A crisp data-URL icon for DOM buttons (memoized: the HUD re-renders on every cursor move). */
 export function spriteDataUrl(name: string, scale = 2): string {
+  const key = `${name}@${scale}`;
+  const hit = urlCache.get(key);
+  if (hit) return hit;
+  const url = encodeSprite(name, scale);
+  urlCache.set(key, url);
+  return url;
+}
+
+function encodeSprite(name: string, scale: number): string {
   const src = spriteCanvas(name);
   const c = document.createElement('canvas');
   c.width = src.width * scale;

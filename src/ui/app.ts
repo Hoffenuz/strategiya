@@ -4,15 +4,32 @@ import { buildingCost, energyCapacity, producerOutput, salvageYield } from '../c
 import { EventBus, type GameEvent } from '../core/events';
 import { isTerminal } from '../core/phases';
 import { deserialize, serialize } from '../core/save';
-import { cleansePreview, forecast, pollutionBand, previewTool, summary, tileInfo, TOOLS, toolBasePrice, toolId, toolIntent, type Tool } from '../core/selectors';
+import {
+  cleansePreview,
+  forecast,
+  pollutionBand,
+  previewSprite,
+  previewTool,
+  summary,
+  tileInfo,
+  TOOLS,
+  toolBasePrice,
+  toolGroup,
+  toolId,
+  toolIntent,
+  type Tool,
+} from '../core/selectors';
 import { createGame, type GameState } from '../core/state';
 import { totalBatteryLevel } from '../core/systems/energy';
 import { getLang, onLangChange, setLang, t, type Lang, type TranslationKey } from '../i18n';
-import { Renderer, rangeFor } from '../render/renderer';
-import { spriteDataUrl } from '../render/sprites';
+import { FxLayer, sourcesFromState } from '../render/fx';
+import { mixHex, paletteFor, shadeHex } from '../render/palette';
+import { Renderer, rangeFor, TILE, ZOOM } from '../render/renderer';
+import { spriteCanvas, spriteDataUrl } from '../render/sprites';
 import { ACHIEVEMENTS, parseAchievements, unlockedBy, type AchievementId } from './achievements';
 import { Audio } from './audio';
 import { $, clear, h } from './dom';
+import { icon, type IconName } from './icons';
 import {
   actionForCode,
   defaultSettings,
@@ -38,6 +55,21 @@ interface LogEntry {
   key: TranslationKey;
   params?: Record<string, string | number | { t: TranslationKey }>;
   kind: LogKind;
+}
+
+/** Log entries carry a shape as well as a color (R-13.2). */
+const LOG_ICONS: Record<LogKind, IconName | null> = { info: null, good: 'check', bad: 'warn', turn: 'diamond' };
+
+const ARROW_ICONS: Record<string, IconName> = { ArrowUp: 'arrowUp', ArrowDown: 'arrowDown', ArrowLeft: 'arrowLeft', ArrowRight: 'arrowRight' };
+
+/** Left-to-right story strip on the title screen: industry → cleansing → clean energy → life. */
+const TITLE_STRIP = ['stack', 'ruin', 'sealer', 'scrubber', 'solar', 'wind', 'grass', 'shrub', 'tree', 'tree'] as const;
+
+/** Deterministic per-pixel noise for the title ground. */
+function noise(x: number, y: number): number {
+  let n = Math.imul(x * 374761393 + y * 668265263, 1274126177);
+  n ^= n >>> 13;
+  return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
 }
 
 function toolIcon(tool: Tool): string {
@@ -77,6 +109,9 @@ export class App {
   private listeningFor: KeyAction | null = null;
   private lastFocus: HTMLElement | null = null;
   private modalOpen = false;
+  /** Particle layers over the map and the title art (R-11.7); fed by the bus only. */
+  private fx: FxLayer | null = null;
+  private titleFx: FxLayer | null = null;
 
   constructor(private root: HTMLElement) {
     const prefersReduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -111,6 +146,7 @@ export class App {
     }
     this.bus.emitAll(events);
     this.dirty = true;
+    if (next !== s) this.syncFx();
     this.renderHud();
     this.renderTools();
     this.renderInspector();
@@ -124,9 +160,15 @@ export class App {
     this.save();
     this.pushLog({ key: 'log.undo', kind: 'info' });
     this.dirty = true;
+    this.syncFx();
     this.renderHud();
     this.renderTools();
     this.renderInspector();
+  }
+
+  /** Ambient particles follow the world: pollen over restored land, smog over open stacks. */
+  private syncFx(): void {
+    if (this.fx && this.state) this.fx.setSources(sourcesFromState(this.state));
   }
 
   private save(): void {
@@ -155,10 +197,12 @@ export class App {
       this.pushLog({ key: 'log.salvaged', params: { gold: e.gold }, kind: 'good' });
       if (e.remaining === 0) this.pushLog({ key: 'log.ruinCleared', kind: 'info' });
       this.renderer?.addFloater(e.x, e.y, `+${e.gold}`, '#f5c84c');
+      this.fx?.burst('spark', e.x, e.y);
       if (this.tutorialStep === 1) this.advanceTutorial(2);
     });
     b.on('building:placed', (e) => {
       this.pushLog({ key: 'log.built', params: { name: name(`building.${e.building}`) }, kind: 'good' });
+      this.fx?.burst('spark', e.x, e.y, 6);
       if (this.tutorialStep === 2 && (e.building === 'solar' || e.building === 'wind')) this.advanceTutorial(3);
     });
     b.on('building:upgraded', (e) => this.pushLog({ key: 'log.upgraded', params: { name: name(`building.${e.building}`), level: e.level }, kind: 'good' }));
@@ -171,24 +215,37 @@ export class App {
     b.on('tile:cleaned', (e) => {
       this.pushLog({ key: 'log.cleaned', params: { amount: e.amount }, kind: 'good' });
       this.renderer?.addFloater(e.x, e.y, `-${e.amount}`, '#7fd8ff');
+      this.fx?.burst('drop', e.x, e.y);
     });
     b.on('flora:planted', (e) => {
       this.pushLog({ key: 'log.planted', params: { name: name(`species.${e.species}`) }, kind: 'good' });
+      this.fx?.burst('leaf', e.x, e.y, 5);
       if (this.tutorialStep === 3) this.advanceTutorial(4);
     });
-    b.on('flora:matured', (e) => this.pushLog({ key: 'log.matured', params: { name: name(`species.${e.species}`) }, kind: 'good' }));
+    b.on('flora:matured', (e) => {
+      this.pushLog({ key: 'log.matured', params: { name: name(`species.${e.species}`) }, kind: 'good' });
+      this.fx?.burst('leaf', e.x, e.y, 4);
+    });
     b.on('flora:withered', (e) => this.pushLog({ key: 'log.withered', params: { name: name(`species.${e.species}`) }, kind: 'bad' }));
-    b.on('flora:spread', () => this.pushLog({ key: 'log.spread', kind: 'good' }));
+    b.on('flora:spread', (e) => {
+      this.pushLog({ key: 'log.spread', kind: 'good' });
+      this.fx?.burst('leaf', e.x, e.y, 4);
+    });
     b.on('tile:restored', (e) => {
       this.pushLog({ key: 'log.restored', params: { gold: e.bounty }, kind: 'good' });
       this.renderer?.addFloater(e.x, e.y, `+${e.bounty}`, '#8fe39a');
+      this.fx?.burst('leaf', e.x, e.y);
     });
     b.on('ecosystem:milestone', (e) => {
       const pct = Math.round([10, 25, 50, 75][e.index - 1] ?? e.ratio * 100);
       this.pushLog({ key: 'log.milestone', params: { pct, gold: e.reward }, kind: 'good' });
+      if (this.state) this.fx?.shower(this.state.width, this.state.height, 45);
       this.showJournalEntry(e.index);
     });
-    b.on('stack:sealed', () => this.pushLog({ key: 'log.sealed', kind: 'good' }));
+    b.on('stack:sealed', (e) => {
+      this.pushLog({ key: 'log.sealed', kind: 'good' });
+      this.fx?.burst('spark', e.x, e.y, 12);
+    });
     b.on('event:random', (e) => {
       const key = `event.${e.kind}` as TranslationKey;
       this.pushLog({ key, params: { amount: e.kind === 'acidRain' ? 5 : e.amount }, kind: e.kind === 'acidRain' ? 'bad' : 'good' });
@@ -202,6 +259,7 @@ export class App {
     });
     b.on('game:won', (e) => {
       this.pushLog({ key: 'log.won', params: { score: e.score }, kind: 'good' });
+      if (this.state) this.fx?.shower(this.state.width, this.state.height, 160);
       setTimeout(() => this.showEnd(), 350);
     });
     b.on('game:lost', (e) => {
@@ -232,6 +290,8 @@ export class App {
     html.lang = this.settings.lang;
     html.classList.toggle('reduced-motion', this.settings.reducedMotion);
     html.classList.toggle('high-contrast', this.settings.highContrast);
+    this.fx?.setEnabled(!this.settings.reducedMotion);
+    this.titleFx?.setEnabled(!this.settings.reducedMotion);
     this.audio.enabled = this.settings.sound;
     writeStore(SETTINGS_KEY, JSON.stringify(this.settings));
     this.dirty = true;
@@ -252,15 +312,20 @@ export class App {
   private showTitle(): void {
     this.state = null;
     this.renderer = null;
+    this.fx = null;
     clear(this.root);
     document.getElementById('overlay')?.remove();
     this.modalOpen = false;
     this.listeningFor = null;
     const hasSave = this.loadSave() !== null;
+    const artW = TITLE_STRIP.length * TILE;
+    const artH = 3 * TILE;
+    const art = h('canvas', { class: 'title-art', width: artW, height: artH });
+    const artFx = h('canvas', { class: 'title-fx', width: artW, height: artH });
     const screen = h(
       'div',
       { class: 'title-screen' },
-      h('canvas', { class: 'title-art', width: 64, height: 24, 'aria-hidden': 'true' }),
+      h('div', { class: 'title-art-wrap', 'aria-hidden': 'true' }, art, artFx),
       h('h1', { class: 'title' }, t('app.title')),
       h('p', { class: 'tagline' }, t('app.tagline')),
       h(
@@ -276,28 +341,54 @@ export class App {
       h('p', { class: 'fine' }, t('menu.saveNote')),
     );
     this.root.append(screen);
-    this.drawTitleArt(screen.querySelector('canvas')!);
+    this.drawTitleArt(art);
+    // Smog above the stack on the left, pollen over the living land on the right.
+    this.titleFx = new FxLayer(artFx, TILE);
+    this.titleFx.setEnabled(!this.settings.reducedMotion);
+    const alive: { x: number; y: number }[] = [];
+    for (let rep = 0; rep < 3; rep++) for (let x = 5; x < TITLE_STRIP.length; x++) alive.push({ x, y: 0 }, { x, y: 1 });
+    this.titleFx.setSources({ stacks: [{ x: 0, y: 1 }], restored: alive });
     (screen.querySelector('.btn') as HTMLElement | null)?.focus();
   }
 
+  /**
+   * The title diorama tells the game's arc from left to right: ground blends through the
+   * three world palettes (R-11.2) with hue-shifted shading (R-11.1), from toxic, hatched
+   * soil under a smoking stack to green, grassy soil under a tree.
+   */
   private drawTitleArt(c: HTMLCanvasElement): void {
-    const ctx = c.getContext('2d')!;
+    const ctx = c.getContext('2d');
+    if (!ctx) return;
     ctx.imageSmoothingEnabled = false;
-    const names = ['stack', 'ruin', 'scrubber', 'solar', 'grass', 'shrub', 'tree', 'wind'];
-    const img = names.map((n) => {
-      const im = new Image();
-      im.src = spriteDataUrl(n, 1);
-      return im;
-    });
-    Promise.all(img.map((im) => im.decode().catch(() => undefined))).then(() => {
-      // A left-to-right story: industry → cleansing → life.
-      const g = ctx.createLinearGradient(0, 0, 64, 0);
-      g.addColorStop(0, '#3d2f4a');
-      g.addColorStop(0.5, '#9b7443');
-      g.addColorStop(1, '#6d9a4a');
-      ctx.fillStyle = g;
-      ctx.fillRect(0, 16, 64, 8);
-      img.forEach((im, i) => ctx.drawImage(im, i * 8, 8, 8, 8));
+    const n = TITLE_STRIP.length;
+    TITLE_STRIP.forEach((sprite, i) => {
+      const r = i / (n - 1);
+      const pal = paletteFor(r);
+      const toxicity = Math.max(0, 1 - r * 1.35);
+      const base = mixHex(pal.soilClean, pal.soilToxic, toxicity);
+      const dark = shadeHex(base, -0.22);
+      const light = shadeHex(base, 0.16);
+      const grass = shadeHex(pal.grass, 0.08);
+      const gx = i * TILE;
+      const gy = 2 * TILE;
+      ctx.fillStyle = base;
+      ctx.fillRect(gx, gy, TILE, TILE);
+      for (let y = 0; y < TILE; y++)
+        for (let x = 0; x < TILE; x++) {
+          const v = noise(gx + x, gy + y);
+          let color: string | null = null;
+          if (y === 0) color = toxicity === 0 ? grass : light;
+          else if (toxicity > 0.3 && (x + y) % 5 === 0) color = 'rgba(236, 228, 255, 0.28)';
+          else if (v < 0.12) color = dark;
+          else if (v > 0.93) color = light;
+          else if (toxicity > 0.55 && v > 0.88) color = '#9be34a';
+          else if (toxicity === 0 && y < 5 && v > 0.78) color = grass;
+          if (color) {
+            ctx.fillStyle = color;
+            ctx.fillRect(gx + x, gy + y, 1, 1);
+          }
+        }
+      ctx.drawImage(spriteCanvas(sprite), gx, TILE);
     });
   }
 
@@ -358,7 +449,7 @@ export class App {
     this.save();
     this.buildGameScreen();
     if (fresh) this.showStory();
-    else this.pushLog({ key: 'log.turn', params: { turn: s.turn, income: 0, energy: 0, upkeep: 0, curtailed: 0 }, kind: 'turn' });
+    else this.pushLog({ key: 'log.resumed', params: { turn: s.turn }, kind: 'turn' });
   }
 
   private findSanctuary(s: GameState): { x: number; y: number } {
@@ -395,8 +486,10 @@ export class App {
 
   private buildGameScreen(): void {
     const s = this.state!;
+    this.titleFx = null;
     clear(this.root);
     const canvas = h('canvas', { class: 'map', role: 'img', tabindex: 0, 'aria-label': t('a11y.map') });
+    const fxCanvas = h('canvas', { class: 'fx', 'aria-hidden': 'true' });
     this.root.append(
       h(
         'div',
@@ -405,7 +498,7 @@ export class App {
         h(
           'main',
           { class: 'play' },
-          h('section', { class: 'map-area' }, h('div', { class: 'map-frame', id: 'map-frame' }, canvas), h('p', { class: 'hint', id: 'keys-hint' })),
+          h('section', { class: 'map-area' }, h('div', { class: 'map-frame', id: 'map-frame' }, canvas, fxCanvas), h('p', { class: 'hint', id: 'keys-hint' })),
           h(
             'aside',
             { class: 'side' },
@@ -424,6 +517,11 @@ export class App {
       ),
     );
     this.renderer = new Renderer(canvas, s.width, s.height);
+    fxCanvas.width = canvas.width;
+    fxCanvas.height = canvas.height;
+    this.fx = new FxLayer(fxCanvas, TILE * ZOOM);
+    this.fx.setEnabled(!this.settings.reducedMotion);
+    this.syncFx();
     canvas.addEventListener('pointermove', (e) => {
       if (e.pointerType !== 'mouse') return;
       const p = this.renderer?.tileFromPoint(e.clientX, e.clientY);
@@ -463,7 +561,10 @@ export class App {
     if (document.getElementById('tutorial') && this.tutorialStep >= 1 && this.tutorialStep <= 5) {
       const minimized = document.getElementById('tutorial')?.classList.contains('minimized');
       this.advanceTutorial(this.tutorialStep);
-      if (minimized) document.getElementById('tutorial')?.classList.add('minimized');
+      if (minimized) {
+        document.getElementById('tutorial')?.classList.add('minimized');
+        this.renderTools();
+      }
     }
     this.dirty = true;
   }
@@ -497,6 +598,7 @@ export class App {
       h(
         'div',
         { class: 'stat turn' },
+        h('img', { src: spriteDataUrl('hourglass'), alt: '', class: 'icon' }),
         h('span', { class: 'stat-label' }, t('hud.turn')),
         h('b', { class: 'stat-value' }, sum.turnLimit ? t('hud.turnOf', { turn: s.turn, limit: sum.turnLimit }) : s.turn),
         h('small', {}, `${t('hud.phase')}: ${t(`phase.${s.phase}` as TranslationKey)}`),
@@ -504,6 +606,7 @@ export class App {
       h(
         'div',
         { class: 'stat progress' },
+        h('img', { src: spriteDataUrl('sprout'), alt: '', class: 'icon' }),
         h('span', { class: 'stat-label' }, t('hud.restored')),
         h('b', { class: 'stat-value' }, `${pct}%`),
         h(
@@ -517,19 +620,32 @@ export class App {
       h(
         'div',
         { class: 'stat pollution' },
+        h('img', { src: spriteDataUrl('smog'), alt: '', class: 'icon' }),
         h('span', { class: 'stat-label' }, t('hud.pollution')),
         h('b', { class: 'stat-value' }, Math.round(sum.averagePollution)),
-        h('small', {}, t(`band.${pollutionBand(Math.round(sum.averagePollution))}` as TranslationKey)),
+        h('small', {}, t('hud.pollutionNote', { band: t(`band.${pollutionBand(Math.round(sum.averagePollution))}` as TranslationKey) })),
       ),
     );
     const actions = $('#top-actions');
     clear(actions);
     const over = isTerminal(s.phase);
+    // Out of Energy: gently point at End turn (a glow, or a static ring under reduced motion).
+    const nudge = !over && s.energy.current === 0;
     actions.append(
-      h('button', { class: 'btn', onclick: () => this.undo(), disabled: this.undoStack.length === 0 || over, title: `${t('hud.undo')} (${keyLabel(this.settings.keys.undo)})` }, '↶ ', t('hud.undo')),
-      h('button', { class: 'btn primary end-turn', onclick: () => this.endTurn(), disabled: over, title: `${t('hud.endTurn')} (${keyLabel(this.settings.keys.endTurn)})` }, t('hud.endTurn'), ' ▶'),
+      h(
+        'button',
+        { class: 'btn', onclick: () => this.undo(), disabled: this.undoStack.length === 0 || over, title: `${t('hud.undo')} (${keyLabel(this.settings.keys.undo)})` },
+        icon('undo'),
+        h('span', { class: 'btn-label hide-sm' }, t('hud.undo')),
+      ),
+      h(
+        'button',
+        { class: `btn primary end-turn${nudge ? ' nudge' : ''}`, onclick: () => this.endTurn(), disabled: over, title: `${t('hud.endTurn')} (${keyLabel(this.settings.keys.endTurn)})` },
+        t('hud.endTurn'),
+        icon('play', 'after'),
+      ),
       h('button', { class: 'btn ghost', onclick: () => this.toggleLang(), 'aria-label': t('a11y.langToggle') }, getLang() === 'en' ? 'UZ' : 'EN'),
-      h('button', { class: 'btn ghost', onclick: () => this.showPause() }, '☰ ', t('menu.pause')),
+      h('button', { class: 'btn ghost', onclick: () => this.showPause() }, icon('menu'), h('span', { class: 'btn-label hide-sm' }, t('menu.pause'))),
     );
   }
 
@@ -584,7 +700,15 @@ export class App {
     const help = $('#tool-help');
     const selected = this.tool !== null ? TOOLS[this.tool]! : null;
     help.textContent = selected ? this.toolDescription(selected) : t('hud.selectTool');
+    let group: string | null = null;
+    const hint = this.tutorialTool();
     TOOLS.forEach((tool, i) => {
+      // Section headings group the palette by purpose, which keeps 15 actions scannable (R-2.7).
+      const g = toolGroup(tool);
+      if (g !== group) {
+        group = g;
+        grid.append(h('p', { class: 'tool-group' }, t(`tools.group.${g}` as TranslationKey)));
+      }
       const q = previewTool(s, tool, this.cursor.x, this.cursor.y);
       const base = toolBasePrice(tool);
       const gold = q.gold || (tool.kind === 'build' || tool.kind === 'plant' ? (base?.gold ?? 0) : 0);
@@ -595,19 +719,22 @@ export class App {
       if (cost.length === 0) cost.push(h('span', { class: 'cost' }, t('hud.free')));
       const reason = q.ok ? '' : t(`reason.${q.reason}` as TranslationKey);
       const isSel = this.tool === i;
+      const hinted = !isSel && toolId(tool) === hint;
       const btn = h(
         'button',
         {
-          class: `tool${isSel ? ' selected' : ''}${q.ok ? '' : ' unavailable'}`,
+          class: `tool${isSel ? ' selected' : ''}${q.ok ? '' : ' unavailable'}${hinted ? ' hinted' : ''}`,
           'aria-pressed': isSel ? 'true' : 'false',
           'data-tool': toolId(tool),
-          title: `${this.toolLabel(tool)}${i < 9 ? ` (${i + 1})` : ''}\n${this.toolDescription(tool)}${reason ? `\n⚠ ${reason}` : ''}`,
+          title: `${this.toolLabel(tool)}${i < 9 ? ` (${i + 1})` : ''}\n${this.toolDescription(tool)}${reason ? `\n${reason}` : ''}`,
           onclick: () => this.selectTool(isSel ? null : i),
         },
         h('img', { src: spriteDataUrl(toolIcon(tool)), alt: '', class: 'tool-icon' }),
         h('span', { class: 'tool-name' }, i < 9 ? h('kbd', {}, String(i + 1)) : null, this.toolLabel(tool)),
         h('span', { class: 'tool-cost' }, ...cost),
-        reason ? h('span', { class: 'tool-reason' }, '⚠ ', reason) : h('span', { class: 'tool-reason ok' }, '✓'),
+        reason
+          ? h('span', { class: 'tool-reason' }, icon('warn'), reason)
+          : h('span', { class: 'tool-reason ok' }, icon('check'), h('span', { class: 'sr-only' }, t('hud.available'))),
       );
       grid.append(btn);
     });
@@ -636,10 +763,10 @@ export class App {
           h('div', { class: 'bar small', 'aria-hidden': 'true' }, h('div', { class: 'bar-fill bad', style: `width:${info.pollution}%` })),
         ),
       );
-      rows.push(h('p', { class: info.restored ? 'good' : 'muted' }, info.restored ? '🍃 ' : '○ ', t(info.restored ? 'info.restored' : 'info.notRestored')));
+      rows.push(h('p', { class: info.restored ? 'good' : 'muted' }, icon(info.restored ? 'leaf' : 'ring'), t(info.restored ? 'info.restored' : 'info.notRestored')));
     }
     if (info.salvage) rows.push(h('p', {}, t('info.scrap', { remaining: info.salvage.remaining, gold: salvageYield(info.salvage.density) })));
-    if (info.sealed !== null) rows.push(h('p', { class: info.sealed ? 'good' : 'bad' }, info.sealed ? '✓ ' : '⚠ ', t(info.sealed ? 'info.sealed' : 'info.unsealed')));
+    if (info.sealed !== null) rows.push(h('p', { class: info.sealed ? 'good' : 'bad' }, icon(info.sealed ? 'check' : 'warn'), t(info.sealed ? 'info.sealed' : 'info.unsealed')));
     if (info.building) {
       const b = info.building;
       rows.push(
@@ -653,7 +780,9 @@ export class App {
             h('strong', {}, t(`building.${b.type}` as TranslationKey)),
             b.type !== 'sanctuary' ? h('p', { class: 'small' }, t('info.level', { level: b.level, max: b.maxLevel })) : null,
             h('p', { class: 'small muted' }, this.buildingDescription(b.type, b.level)),
-            b.hasUpkeep ? h('p', { class: `small ${!b.enabled ? 'muted' : b.powered ? 'good' : 'bad'}` }, !b.enabled ? '⏸ ' : b.powered ? '● ' : 'zZ ', t(!b.enabled ? 'info.off' : b.powered ? 'info.on' : 'info.unpowered')) : null,
+            b.hasUpkeep
+              ? h('p', { class: `small ${!b.enabled ? 'muted' : b.powered ? 'good' : 'bad'}` }, icon(!b.enabled ? 'pause' : b.powered ? 'dot' : 'zz'), t(!b.enabled ? 'info.off' : b.powered ? 'info.on' : 'info.unpowered'))
+              : null,
             b.type !== 'sanctuary' && b.type !== 'sealer' && b.level < b.maxLevel
               ? h('p', { class: 'small' }, `${t('tool.upgrade')}: ${buildingCost(b.type, b.level + 1)} ${t('hud.gold')}`)
               : null,
@@ -679,7 +808,12 @@ export class App {
     const list = document.getElementById('log');
     if (!list) return;
     clear(list);
-    for (const entry of this.log.slice(-LOG_LIMIT).reverse()) list.append(h('li', { class: `log-${entry.kind}` }, this.formatLog(entry)));
+    for (const entry of this.log.slice(-LOG_LIMIT).reverse()) list.append(this.logItem(entry));
+  }
+
+  private logItem(entry: LogEntry): HTMLElement {
+    const mark = LOG_ICONS[entry.kind];
+    return h('li', { class: `log-${entry.kind}` }, mark ? icon(mark) : null, h('span', {}, this.formatLog(entry)));
   }
 
   /** Log entries keep raw parameters so they re-translate when the language changes. */
@@ -700,7 +834,7 @@ export class App {
     if (this.log.length > LOG_LIMIT * 2) this.log.splice(0, this.log.length - LOG_LIMIT);
     const list = document.getElementById('log');
     if (!list) return;
-    list.prepend(h('li', { class: `log-${entry.kind}` }, this.formatLog(entry)));
+    list.prepend(this.logItem(entry));
     while (list.children.length > LOG_LIMIT) list.lastElementChild?.remove();
   }
 
@@ -712,7 +846,7 @@ export class App {
   private toast(text: string, kind: 'ach' | 'info' = 'info'): void {
     const box = document.getElementById('toasts');
     if (!box) return;
-    const el = h('div', { class: `toast toast-${kind}` }, kind === 'ach' ? '★ ' : '', text);
+    const el = h('div', { class: `toast toast-${kind}` }, kind === 'ach' ? icon('star', 'gold') : null, h('span', {}, text));
     box.append(el);
     setTimeout(() => el.remove(), 4000);
   }
@@ -825,13 +959,31 @@ export class App {
 
   // ───────────────────────── tutorial ─────────────────────────
 
+  /** The palette tool the visible tutorial step asks for (highlighted in the toolbar). */
+  private tutorialTool(): string | null {
+    const card = document.getElementById('tutorial');
+    if (!card || card.classList.contains('minimized')) return null;
+    const byStep: Record<number, string> = { 1: 'salvage', 2: 'build:solar', 3: 'plant:grass', 5: 'build:sealer' };
+    return byStep[this.tutorialStep] ?? null;
+  }
+
+  /** Scrolls only the tool list (never the page) so the hinted tool is visible. */
+  private revealHintedTool(): void {
+    const grid = document.getElementById('tools');
+    const btn = grid?.querySelector<HTMLElement>('.tool.hinted');
+    if (!grid || !btn) return;
+    const top = btn.offsetTop - grid.offsetTop;
+    if (top < grid.scrollTop || top + btn.offsetHeight > grid.scrollTop + grid.clientHeight) grid.scrollTop = Math.max(0, top - 28);
+  }
+
   private advanceTutorial(step: number): void {
     if (!this.settings.tutorial || !this.state) return;
     this.tutorialStep = step;
     document.getElementById('tutorial')?.remove();
     if (step > 5) return;
-    const game = this.root.querySelector('.game');
-    if (!game) return;
+    // Docked at the top of the side column, so tips never cover map tiles (R-13.10).
+    const side = this.root.querySelector('.side');
+    if (!side) return;
     const card = h(
       'div',
       { class: 'tutorial', id: 'tutorial', role: 'note' },
@@ -847,6 +999,7 @@ export class App {
               this.tutorialStep = 99;
               document.getElementById('tutorial')?.remove();
               this.updateSettings({ tutorial: false });
+              this.renderTools();
             },
           },
           t('tutorial.skip'),
@@ -860,13 +1013,16 @@ export class App {
                 this.tutorialStep = 99;
                 document.getElementById('tutorial')?.remove();
               } else document.getElementById('tutorial')?.classList.add('minimized');
+              this.renderTools();
             },
           },
           t('tutorial.next'),
         ),
       ),
     );
-    game.append(card);
+    side.prepend(card);
+    this.renderTools();
+    this.revealHintedTool();
   }
 
   // ───────────────────────── modals ─────────────────────────
@@ -883,7 +1039,12 @@ export class App {
     const overlay = h('div', { class: 'overlay', id: 'overlay' }, modal);
     document.body.append(overlay);
     this.modalOpen = true;
-    const focusable = modal.querySelector<HTMLElement>('input:checked, .btn.primary, button, input, select');
+    // Focus the most meaningful control: the chosen option, an explicit target, the main action.
+    const focusable =
+      modal.querySelector<HTMLElement>('input[type="radio"]:checked') ??
+      modal.querySelector<HTMLElement>('[data-autofocus]') ??
+      modal.querySelector<HTMLElement>('.btn.primary') ??
+      modal.querySelector<HTMLElement>('button, input, select');
     focusable?.focus();
   }
 
@@ -953,7 +1114,7 @@ export class App {
           return h(
             'li',
             { class: got ? 'got' : 'locked' },
-            h('span', { class: 'ach-icon', 'aria-hidden': 'true' }, got ? '★' : '☆'),
+            h('span', { class: 'ach-icon', 'aria-hidden': 'true' }, icon(got ? 'star' : 'lock')),
             h('span', {}, h('strong', {}, t(`ach.${id}` as TranslationKey)), h('br'), h('span', { class: 'small' }, t(`ach.${id}.desc` as TranslationKey))),
             h('span', { class: 'sr-only' }, got ? '' : t('ach.locked')),
           );
@@ -1000,7 +1161,7 @@ export class App {
         'div',
         { class: 'key-row' },
         h('span', {}, t(`key.${a}` as TranslationKey)),
-        h('button', { class: 'btn small key', id: `key-${a}`, onclick: () => this.startRebind(a) }, keyLabel(st.keys[a])),
+        h('button', { class: 'btn small key', id: `key-${a}`, onclick: () => this.startRebind(a) }, ...this.keyCap(st.keys[a])),
       ),
     );
     this.openModal(t('settings.title'), [
@@ -1016,6 +1177,7 @@ export class App {
             {
               id: 'set-lang',
               class: 'input',
+              'data-autofocus': true,
               onchange: (e: Event) => {
                 this.updateSettings({ lang: (e.target as HTMLSelectElement).value as Lang });
                 this.showSettings();
@@ -1079,7 +1241,7 @@ export class App {
     const msg = document.getElementById('key-msg');
     if (code === 'Escape' && a !== 'cancel') {
       const btn = document.getElementById(`key-${a}`);
-      if (btn) btn.textContent = keyLabel(this.settings.keys[a]);
+      if (btn) this.setKeyCap(btn, this.settings.keys[a]);
       return;
     }
     const r = rebind(this.settings.keys, a, code);
@@ -1091,10 +1253,22 @@ export class App {
     }
     const btn = document.getElementById(`key-${a}`);
     if (btn) {
-      btn.textContent = keyLabel(this.settings.keys[a]);
+      this.setKeyCap(btn, this.settings.keys[a]);
       btn.focus();
     }
     this.renderHud();
+  }
+
+  /** Key cap content: pixel arrows for arrow keys (with a spoken name), text otherwise. */
+  private keyCap(code: string): (Node | string)[] {
+    const arrow = ARROW_ICONS[code];
+    if (!arrow) return [keyLabel(code)];
+    return [icon(arrow, 'key-ico'), h('span', { class: 'sr-only' }, code.replace('Arrow', 'Arrow '))];
+  }
+
+  private setKeyCap(btn: HTMLElement, code: string): void {
+    clear(btn);
+    btn.append(...this.keyCap(code));
   }
 
   private showEnd(): void {
@@ -1107,9 +1281,11 @@ export class App {
     const text = won ? t('end.victoryText', { turns: s.turn }) : t(s.outcome.reason === 'collapse' ? 'end.defeatText.collapse' : 'end.defeatText.time');
     const difficulty = s.difficulty;
     const seed = s.seed;
+    const artSprites = won ? ['grass', 'shrub', 'tree', 'sanctuary', 'tree', 'shrub', 'grass'] : ['stack', 'ruin', 'stack'];
     this.openModal(
       t(won ? 'end.victory' : 'end.defeat'),
       [
+        h('div', { class: 'end-art', 'aria-hidden': 'true' }, ...artSprites.map((n) => h('img', { src: spriteDataUrl(n, 3), alt: '' }))),
         h('p', { class: 'lead' }, text),
         h(
           'dl',
@@ -1156,8 +1332,10 @@ export class App {
       if (!this.dirty) return;
       this.dirty = false;
       const tool = this.tool !== null ? TOOLS[this.tool]! : null;
+      const ghost = tool && !isTerminal(s.phase) ? { sprite: previewSprite(tool), ok: previewTool(s, tool, this.cursor.x, this.cursor.y).ok } : null;
       r.draw(s, {
         cursor: this.cursor,
+        ghost,
         range: rangeFor(s, this.cursor.x, this.cursor.y, tool),
         patterns: this.settings.patterns,
         reducedMotion: this.settings.reducedMotion,

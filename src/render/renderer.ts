@@ -1,5 +1,5 @@
 import type { GameState } from '../core/state';
-import { pollutionBand, tileInfo, type TileInfo } from '../core/selectors';
+import { allTileInfo, pollutionBand, tileInfo, type TileInfo } from '../core/selectors';
 import { restorationSummary } from '../core/systems/restorable';
 import { EMISSION } from '../core/config';
 import { scrubberRadius } from '../core/economy/formulas';
@@ -14,6 +14,11 @@ export interface RenderOptions {
   cursor: { x: number; y: number } | null;
   /** Tiles to outline as the effect area of the selected tool or hovered building. */
   range: { x: number; y: number; r: number; kind: 'clean' | 'emit' } | null;
+  /**
+   * Placement preview under the cursor (R-11.8): the sprite the selected tool would add
+   * (if any), and whether the action is allowed there, shown by badge shape and color.
+   */
+  ghost: { sprite: string | null; ok: boolean } | null;
   patterns: boolean;
   reducedMotion: boolean;
   highContrast: boolean;
@@ -84,15 +89,26 @@ export class Renderer {
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     const anim = opts.reducedMotion ? 0 : this.frame;
 
-    for (let y = 0; y < s.height; y++)
-      for (let x = 0; x < s.width; x++) {
-        const info = tileInfo(s, x, y)!;
-        this.drawTile(info, pal, anim, opts);
-      }
+    for (const info of allTileInfo(s)) this.drawTile(info, pal, anim, opts);
 
     if (opts.range) this.drawRange(s, opts.range);
+    if (opts.cursor && opts.ghost) this.drawGhost(opts.cursor.x, opts.cursor.y, opts.ghost);
     if (opts.cursor) this.drawCursor(opts.cursor.x, opts.cursor.y, anim, opts.highContrast);
     this.drawFloaters(opts.reducedMotion);
+  }
+
+  /** Translucent preview of what the tool would place, plus a check / cross badge. */
+  private drawGhost(x: number, y: number, ghost: NonNullable<RenderOptions['ghost']>): void {
+    const ctx = this.ctx;
+    const dx = x * PX;
+    const dy = y * PX;
+    if (ghost.sprite && ghost.ok) {
+      ctx.globalAlpha = 0.6;
+      ctx.drawImage(spriteCanvas(ghost.sprite), dx, dy, PX, PX);
+      ctx.globalAlpha = 1;
+    }
+    const badge = spriteCanvas(ghost.ok ? 'okBadge' : 'noBadge');
+    ctx.drawImage(badge, dx + ZOOM, dy + PX - (badge.height + 1) * ZOOM, badge.width * ZOOM, badge.height * ZOOM);
   }
 
   private texture(key: string, build: (c: CanvasRenderingContext2D) => void): HTMLCanvasElement {
@@ -284,11 +300,13 @@ export class Renderer {
     this.floaters = this.floaters.filter((f) => now - f.born < 1400);
     ctx.font = `bold ${7 * ZOOM}px ui-monospace, "Courier New", monospace`;
     ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
     for (const f of this.floaters) {
       const age = (now - f.born) / 1400;
       const rise = reducedMotion ? 0 : age * PX * 0.8;
-      const px = f.x * PX + PX / 2;
-      const py = f.y * PX + PX / 3 - rise;
+      // Keep the whole label on the canvas, even on the top row and the edges.
+      const px = Math.max(PX / 2, Math.min(this.canvas.width - PX / 2, f.x * PX + PX / 2));
+      const py = Math.max(5 * ZOOM, f.y * PX + PX / 3 - rise);
       ctx.globalAlpha = 1 - age * age;
       ctx.lineWidth = ZOOM * 1.5;
       ctx.strokeStyle = '#11131a';

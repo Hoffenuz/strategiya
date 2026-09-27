@@ -33,8 +33,19 @@ export interface TileInfo {
 
 export function tileInfo(s: GameState, x: number, y: number): TileInfo | null {
   if (!inBounds(s, x, y)) return null;
-  const t = tileAt(s, x, y);
+  return tileInfoWith(s, occupants(s), x, y);
+}
+
+/** Every tile's info in row-major order, sharing one occupant index (used by the renderer). */
+export function allTileInfo(s: GameState): TileInfo[] {
   const occ = occupants(s);
+  const out: TileInfo[] = [];
+  for (let y = 0; y < s.height; y++) for (let x = 0; x < s.width; x++) out.push(tileInfoWith(s, occ, x, y));
+  return out;
+}
+
+function tileInfoWith(s: GameState, occ: ReturnType<typeof occupants>, x: number, y: number): TileInfo {
+  const t = tileAt(s, x, y);
   const key = y * s.width + x;
   const pollution = must(s.world, t, 'PollutionLevel').value;
   const be = occ.building.get(key);
@@ -91,6 +102,30 @@ export const TOOLS: readonly Tool[] = [
   { kind: 'toggle' },
   { kind: 'demolish' },
 ];
+
+export type ToolGroup = 'restore' | 'plant' | 'build' | 'manage';
+
+/** Palette section of a tool, so the HUD can group actions by purpose (R-2.7). */
+export function toolGroup(t: Tool): ToolGroup {
+  switch (t.kind) {
+    case 'salvage':
+    case 'cleanup':
+      return 'restore';
+    case 'plant':
+      return 'plant';
+    case 'build':
+      return 'build';
+    default:
+      return 'manage';
+  }
+}
+
+/** Sprite a placement tool would add to the tile (building or seedling), for the ghost preview (R-11.8). */
+export function previewSprite(t: Tool): string | null {
+  if (t.kind === 'build') return t.building;
+  if (t.kind === 'plant') return `${t.species}0`;
+  return null;
+}
 
 export function toolId(t: Tool): string {
   if (t.kind === 'build') return `build:${t.building}`;
