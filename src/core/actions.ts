@@ -7,7 +7,7 @@ import type { Emit, GameEvent, RejectReason } from './events';
 import { inBounds, occupants, tileAt } from './grid';
 import { isTerminal, transition } from './phases';
 import type { Rng } from './rng';
-import { cloneState, spawnBuilding, type GameState } from './state';
+import { cloneState, historyPoint, spawnBuilding, type GameState, type Outcome } from './state';
 import type { SystemContext } from './systems/context';
 import { cleansingSystem } from './systems/cleansing';
 import { economySystem } from './systems/economy';
@@ -229,17 +229,26 @@ function setPhase(s: GameState, emit: Emit, trigger: Parameters<typeof transitio
   emit({ type: 'phase:changed', phase: next });
 }
 
+/**
+ * The resolution systems in design order (§3.3, R-6.6). End turn and the forecast both
+ * call exactly this function, so the forecast can never drift from the game (R-14.8).
+ */
+export function runResolution(ctx: SystemContext): Outcome | null {
+  cleansingSystem(ctx);
+  pollutionSystem(ctx);
+  growthSystem(ctx);
+  restorationSystem(ctx);
+  return victorySystem(ctx);
+}
+
 /** Resolution then the next preparation (design §3.3 order). */
 function endTurn(s: GameState, emit: Emit): void {
   const rng: Rng = { state: s.rng };
   const ctx: SystemContext = { s, emit, rng };
 
   setPhase(s, emit, 'endTurn');
-  cleansingSystem(ctx);
-  pollutionSystem(ctx);
-  growthSystem(ctx);
-  restorationSystem(ctx);
-  const outcome = victorySystem(ctx);
+  const outcome = runResolution(ctx);
+  s.history.push(historyPoint(s, s.turn));
   if (outcome) {
     s.outcome = outcome;
     s.rng = rng.state;
@@ -254,6 +263,8 @@ function endTurn(s: GameState, emit: Emit): void {
   const income = economySystem(ctx);
   const { produced, curtailed, upkeep } = energySystem(ctx);
   randomEventSystem(ctx);
+  // Acid rain or pollinators may have changed tiles: keep `restored` truthful right away.
+  refreshRestored(s, false);
   s.rng = rng.state;
   emit({ type: 'turn:started', turn: s.turn, income, produced, curtailed, upkeep });
   setPhase(s, emit, 'prepared');

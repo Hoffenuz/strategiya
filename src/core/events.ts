@@ -37,7 +37,12 @@ export type GameEvent =
   | { type: 'tile:restored'; bounty: number; x: number; y: number }
   | { type: 'ecosystem:milestone'; index: number; ratio: number; reward: number }
   | { type: 'stack:sealed'; x: number; y: number }
-  | { type: 'event:random'; kind: RandomEventKind; amount: number }
+  /** A working scrubber or purifier cleansed its area this resolution (R-11.17). */
+  | { type: 'building:pulsed'; building: 'scrubber' | 'purifier'; x: number; y: number; radius: number }
+  /** An unsealed stack emitted pollution this resolution (R-11.17). */
+  | { type: 'stack:emitted'; x: number; y: number; radius: number }
+  /** `tiles` lists the tiles acid rain hit; it is empty for the other events (R-11.16). */
+  | { type: 'event:random'; kind: RandomEventKind; amount: number; tiles: { x: number; y: number }[] }
   | { type: 'action:rejected'; action: string; reason: RejectReason }
   | { type: 'game:won'; turn: number; score: number }
   | { type: 'game:lost'; turn: number; reason: 'time' | 'collapse' };

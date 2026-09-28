@@ -32,12 +32,15 @@ export function randomEventSystem(ctx: SystemContext): RandomEventKind | null {
   const kind = rollEventKind(rng);
   if (!kind) return null;
   let amount = 0;
+  const tiles: { x: number; y: number }[] = [];
   switch (kind) {
     case 'acidRain': {
       const candidates = query(s.world, 'Terrain', 'PollutionLevel').filter((e) => isRestorable(must(s.world, e, 'Terrain').kind));
       for (const e of shuffled(rng, candidates).slice(0, ACID_RAIN_TILES)) {
         const p = must(s.world, e, 'PollutionLevel');
         p.value = Math.min(100, p.value + ACID_RAIN_AMOUNT);
+        const { x, y } = must(s.world, e, 'GridPosition');
+        tiles.push({ x, y });
       }
       amount = ACID_RAIN_AMOUNT;
       break;
@@ -58,6 +61,6 @@ export function randomEventSystem(ctx: SystemContext): RandomEventKind | null {
       emit({ type: 'energy:changed', delta: amount, current: s.energy.current });
       break;
   }
-  emit({ type: 'event:random', kind, amount });
+  emit({ type: 'event:random', kind, amount, tiles });
   return kind;
 }

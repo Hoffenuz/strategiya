@@ -4,7 +4,7 @@ import { area, tileAt } from '../grid';
 import type { SystemContext } from './context';
 
 /** CleansingSystem: logarithmic cleansing by powered scrubbers and purifiers (design §4.6). */
-export function cleansingSystem({ s }: SystemContext): void {
+export function cleansingSystem({ s, emit }: SystemContext): void {
   for (const e of query(s.world, 'Cleanser', 'Building', 'ActiveState', 'GridPosition')) {
     const active = must(s.world, e, 'ActiveState');
     if (!active.enabled || !active.powered) continue;
@@ -13,6 +13,7 @@ export function cleansingSystem({ s }: SystemContext): void {
     const pos = must(s.world, e, 'GridPosition');
     const power = medium === 'soil' ? soilCleansePower(level) : waterCleansePower(level);
     const radius = medium === 'soil' ? scrubberRadius(level) : 1;
+    emit({ type: 'building:pulsed', building: medium === 'soil' ? 'scrubber' : 'purifier', x: pos.x, y: pos.y, radius });
     for (const [x, y] of area(s, pos.x, pos.y, radius)) {
       const tile = tileAt(s, x, y);
       const kind = must(s.world, tile, 'Terrain').kind;

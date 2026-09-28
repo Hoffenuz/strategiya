@@ -6,8 +6,39 @@ import { inBounds, occupants, tileAt } from './grid';
 import { quote, type Intent, type Quote } from './actions';
 import type { GameState } from './state';
 import { grossProduction } from './systems/energy';
+import { nearCleanWater } from './systems/growth';
 import { restorationSummary, type RestorationSummary } from './systems/restorable';
 import { harmonyScore } from './systems/victory';
+
+/** World-stage thresholds on progress toward the goal (R-11.2, R-11.12). */
+export const STAGE_AT = { transition: 0.45, revival: 0.9 } as const;
+
+export type WorldStage = 'collapse' | 'transition' | 'revival';
+
+/** Restoration ratio over the difficulty's win ratio, clamped to [0, 1]. */
+export function worldProgress(s: GameState): number {
+  const { ratio } = restorationSummary(s);
+  return Math.max(0, Math.min(1, ratio / DIFFICULTIES[s.difficulty].winRatio));
+}
+
+export function worldStage(progress: number): WorldStage {
+  if (progress >= STAGE_AT.revival) return 'revival';
+  if (progress >= STAGE_AT.transition) return 'transition';
+  return 'collapse';
+}
+
+export type FloraStage = 'seedling' | 'young' | 'mature';
+
+/** Seedling below a third of its growth time, then young until mature (R-11.13). */
+export function floraStage(f: { growth: number; maturation: number; mature: boolean }): FloraStage {
+  if (f.mature) return 'mature';
+  return f.growth * 3 < f.maturation ? 'seedling' : 'young';
+}
+
+export function floraSprite(species: Species, stage: FloraStage): string {
+  if (stage === 'mature') return species;
+  return `${species}${stage === 'seedling' ? 0 : 1}`;
+}
 
 export type PollutionBand = 'clean' | 'recovering' | 'polluted' | 'toxic';
 
@@ -28,7 +59,7 @@ export interface TileInfo {
   salvage: { remaining: number; density: number } | null;
   sealed: boolean | null;
   building: { type: BuildingType; level: number; maxLevel: number; enabled: boolean; powered: boolean; hasUpkeep: boolean } | null;
-  flora: { species: Species; growth: number; maturation: number; mature: boolean } | null;
+  flora: { species: Species; growth: number; maturation: number; mature: boolean; stage: FloraStage; turnsLeft: number } | null;
 }
 
 export function tileInfo(s: GameState, x: number, y: number): TileInfo | null {
@@ -66,7 +97,16 @@ function tileInfoWith(s: GameState, occ: ReturnType<typeof occupants>, x: number
   let flora: TileInfo['flora'] = null;
   if (fe !== undefined) {
     const f = must(s.world, fe, 'Flora');
-    flora = { species: f.species, growth: f.growth, maturation: SPECIES[f.species].maturation, mature: f.mature };
+    const maturation = SPECIES[f.species].maturation;
+    const rate = nearCleanWater(s, x, y) ? 2 : 1;
+    flora = {
+      species: f.species,
+      growth: f.growth,
+      maturation,
+      mature: f.mature,
+      stage: floraStage({ growth: f.growth, maturation, mature: f.mature }),
+      turnsLeft: f.mature ? 0 : Math.ceil((maturation - f.growth) / rate),
+    };
   }
   const salvage = get(s.world, t, 'Salvage');
   const source = get(s.world, t, 'ToxicSource');

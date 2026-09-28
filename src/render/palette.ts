@@ -1,3 +1,4 @@
+import { STAGE_AT } from '../core/selectors';
 import { hex, mix, shade, toHex, type RGB } from './color';
 
 /** World palette roles; each keyframe gives every role a color (R-11.2). */
@@ -52,10 +53,14 @@ const SPRING: WorldPalette = {
   backdrop: '#101a14',
 };
 
+/**
+ * Keyframes sit on the world-stage thresholds of *progress toward the goal* (R-11.2), so
+ * the valley reaches full Spring Blossom before every victory, on every difficulty.
+ */
 export const KEYFRAMES = [
   { at: 0, palette: CHROME },
-  { at: 0.35, palette: AUTUMN },
-  { at: 0.7, palette: SPRING },
+  { at: STAGE_AT.transition, palette: AUTUMN },
+  { at: STAGE_AT.revival, palette: SPRING },
 ] as const;
 
 function blend(a: WorldPalette, b: WorldPalette, t: number): WorldPalette {

@@ -248,6 +248,61 @@ export const SPRITES: Record<string, string[]> = {
     '.kkkkkkkkkkkkk..',
     '................',
   ],
+  // Young stage (R-11.13): between seedling and mature, on the same ground line.
+  grass1: [
+    '................',
+    '................',
+    '................',
+    '................',
+    '................',
+    '................',
+    '................',
+    '................',
+    '................',
+    '....k......k....',
+    '...kLk....kLk...',
+    '...kGk.k..kGk...',
+    '..kGGkkLk.kGGk..',
+    '..kGgkGGkkGgGk..',
+    '..kkkkkkkkkkkk..',
+    '................',
+  ],
+  shrub1: [
+    '................',
+    '................',
+    '................',
+    '................',
+    '................',
+    '................',
+    '......kkkk......',
+    '....kkLGGLkk....',
+    '...kLGGGGGGLk...',
+    '...kGGGGGpGGk...',
+    '...kgGGGGGGgk...',
+    '....kggGGggk....',
+    '.....kknNkk.....',
+    '......knNk......',
+    '.....kkkkkk.....',
+    '................',
+  ],
+  tree1: [
+    '................',
+    '................',
+    '................',
+    '.......kkk......',
+    '.....kkLLLk.....',
+    '....kLGGGGLk....',
+    '...kLGGGGGGGk...',
+    '...kGGGGGGGgk...',
+    '...kgGGGGGggk...',
+    '....kkggggkk....',
+    '......knNk......',
+    '.......nNk......',
+    '.......nNk......',
+    '......knNk......',
+    '......kkkkk.....',
+    '................',
+  ],
   shrub0: [
     '................',
     '................',
@@ -507,6 +562,24 @@ export const SPRITES: Record<string, string[]> = {
   // Placement preview badges: valid = green check, invalid = red cross (shape + color, R-13.2).
   okBadge: ['.kkkkk.', 'kGGGGwk', 'kGGGwGk', 'kwGwGGk', 'kGwGGGk', 'kGGGGGk', '.kkkkk.'],
   noBadge: ['.kkkkk.', 'kwrrrwk', 'krwrwrk', 'krrwrrk', 'krwrwrk', 'kwrrrwk', '.kkkkk.'],
+  // Forecast: this plant will wither this turn (R-13.14) — a warning triangle, not just a color.
+  risk: ['....k....', '...kyk...', '..kykyk..', '..kykyk..', '.kyykyyk.', '.kyyyyyk.', 'kyyykyyyk', 'kkkkkkkkk'],
+  // Restoration lens (R-13.12): "plant here" — a sprout on soil.
+  plantMark: ['.kkkkkkk.', 'knnnnnnnk', 'knLnnnLnk', 'knLLnLLnk', 'knnLLLnnk', 'knnnLnnnk', 'knnnLnnnk', 'knnnnnnnk', '.kkkkkkk.'],
+};
+
+/** 3 × 5 pixel digits for the lenses (R-13.12); '#' = ink. */
+export const DIGITS: Record<string, readonly string[]> = {
+  '0': ['###', '#.#', '#.#', '#.#', '###'],
+  '1': ['.#.', '##.', '.#.', '.#.', '###'],
+  '2': ['###', '..#', '###', '#..', '###'],
+  '3': ['###', '..#', '.##', '..#', '###'],
+  '4': ['#.#', '#.#', '###', '..#', '..#'],
+  '5': ['###', '#..', '###', '..#', '###'],
+  '6': ['###', '#..', '###', '#.#', '###'],
+  '7': ['###', '..#', '.#.', '.#.', '.#.'],
+  '8': ['###', '#.#', '###', '#.#', '###'],
+  '9': ['###', '#.#', '###', '..#', '###'],
 };
 
 const cache = new Map<string, HTMLCanvasElement>();

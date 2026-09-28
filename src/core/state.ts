@@ -8,7 +8,22 @@ import { seedRng } from './rng';
 import { generateMap } from './map';
 import { restorationSummary } from './systems/restorable';
 
-export const SAVE_VERSION = 1;
+export const SAVE_VERSION = 2;
+
+/** One point of the game's history (R-10.5): the state right after a resolution. */
+export interface HistoryPoint {
+  turn: number;
+  /** Restoration ratio, rounded to 3 decimals. */
+  ratio: number;
+  /** Average pollution of restorable tiles, rounded to 1 decimal. */
+  pollution: number;
+}
+
+/** The history point for `s` as it is now, labelled with `turn`. */
+export function historyPoint(s: GameState, turn: number): HistoryPoint {
+  const r = restorationSummary(s);
+  return { turn, ratio: Math.round(r.ratio * 1000) / 1000, pollution: Math.round(r.averagePollution * 10) / 10 };
+}
 
 export interface GameStats {
   salvaged: number;
@@ -51,6 +66,8 @@ export interface GameState {
   stats: GameStats;
   /** Milestone indices (1..4) reached, in order, for the Guardian's journal. */
   journal: number[];
+  /** Turn 0 (genesis), then one point per resolution (R-10.5). */
+  history: HistoryPoint[];
 }
 
 export function emptyStats(): GameStats {
@@ -122,9 +139,11 @@ export function createGame(seed: number, difficulty: Difficulty): GameState {
     outcome: null,
     stats: emptyStats(),
     journal: [],
+    history: [],
     startPollution: 0,
   };
   state.startPollution = Math.round(restorationSummary(state).averagePollution);
+  state.history.push(historyPoint(state, 0));
   return state;
 }
 

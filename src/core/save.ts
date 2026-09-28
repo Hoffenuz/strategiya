@@ -1,12 +1,15 @@
 import { DIFFICULTIES } from './config';
-import { SAVE_VERSION, type GameState } from './state';
+import { historyPoint, SAVE_VERSION, type GameState } from './state';
 
 /** Versioned JSON save (R-10.2). */
 export function serialize(s: GameState): string {
   return JSON.stringify(s);
 }
 
-/** Returns null for corrupt, foreign or incompatible saves instead of throwing (R-10.3). */
+/**
+ * Returns null for corrupt, foreign or incompatible saves instead of throwing (R-10.3).
+ * Saves of the previous version are migrated rather than discarded (R-10.6).
+ */
 export function deserialize(json: string): GameState | null {
   let raw: unknown;
   try {
@@ -14,12 +17,30 @@ export function deserialize(json: string): GameState | null {
   } catch {
     return null;
   }
-  if (!isGameState(raw)) return null;
-  return raw;
+  const current = migrate(raw);
+  return isGameState(current) ? current : null;
+}
+
+/** Version 1 → 2: adds the history, starting from the last resolved turn. */
+function migrate(v: unknown): unknown {
+  if (!isObj(v) || v.version !== 1) return v;
+  const next: Record<string, unknown> = { ...v, version: SAVE_VERSION, history: [] };
+  if (!isGameState(next)) return null;
+  try {
+    const resolved = next.outcome ? next.turn : next.turn - 1;
+    next.history = [historyPoint(next, Math.max(0, resolved))];
+  } catch {
+    return null; // a world too broken to summarise
+  }
+  return next;
 }
 
 function isObj(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function isHistoryPoint(p: unknown): boolean {
+  return isObj(p) && typeof p.turn === 'number' && typeof p.ratio === 'number' && typeof p.pollution === 'number';
 }
 
 function isGameState(v: unknown): v is GameState {
@@ -33,5 +54,6 @@ function isGameState(v: unknown): v is GameState {
   if (!isObj(v.world) || !isObj(v.world.c) || !isObj(v.world.alive)) return false;
   if (!isObj(v.gold) || !isObj(v.energy) || !isObj(v.stats)) return false;
   if (!Array.isArray(v.processedTx) || !Array.isArray(v.journal)) return false;
+  if (!Array.isArray(v.history) || !v.history.every(isHistoryPoint)) return false;
   return typeof v.phase === 'string';
 }

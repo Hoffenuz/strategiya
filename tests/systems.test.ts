@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { must, query } from '../src/core/ecs/world';
 import type { GameEvent } from '../src/core/events';
 import { seedRng } from '../src/core/rng';
-import { spawnBuilding, type GameState } from '../src/core/state';
+import { createGame, spawnBuilding, type GameState } from '../src/core/state';
 import type { SystemContext } from '../src/core/systems/context';
 import { economySystem } from '../src/core/systems/economy';
 import { energySystem } from '../src/core/systems/energy';
@@ -12,7 +12,9 @@ import { growthSystem, spawnFlora } from '../src/core/systems/growth';
 import { restorationSystem } from '../src/core/systems/restoration';
 import { victorySystem } from '../src/core/systems/victory';
 import { restorationSummary } from '../src/core/systems/restorable';
-import { rollEventKind } from '../src/core/systems/randomEvents';
+import { randomEventSystem, rollEventKind } from '../src/core/systems/randomEvents';
+import { isRestorable } from '../src/core/systems/restorable';
+import { ACID_RAIN_AMOUNT, ACID_RAIN_TILES } from '../src/core/config';
 import { blankGame, pollutionAt, setTile } from './helpers';
 
 function ctx(s: GameState, seed = 1): SystemContext & { events: GameEvent[] } {
@@ -242,5 +244,65 @@ describe('Random events (T3.9)', () => {
     expect(counts.acidRain! / n).toBeCloseTo(0.3 * 0.3, 1);
     expect(counts.caravan! / n).toBeCloseTo(0.3 * 0.25, 1);
     expect(counts.sunny! / n).toBeCloseTo(0.3 * 0.2, 1);
+  });
+});
+
+
+describe('Resolution waves and weather data (T10.7)', () => {
+  it('every working cleanser reports a pulse with its radius; sleeping ones stay quiet', () => {
+    const s = blankGame();
+    setTile(s, 12, 8, 'water', 30);
+    spawnBuilding(s.world, 'scrubber', 5, 4, 18);
+    const big = spawnBuilding(s.world, 'scrubber', 9, 4, 18);
+    must(s.world, big, 'Building').level = 3;
+    spawnBuilding(s.world, 'purifier', 12, 8, 22);
+    const asleep = spawnBuilding(s.world, 'scrubber', 6, 9, 18);
+    must(s.world, asleep, 'ActiveState').powered = false;
+    const c = ctx(s);
+    cleansingSystem(c);
+    expect(c.events.filter((e) => e.type === 'building:pulsed')).toEqual([
+      { type: 'building:pulsed', building: 'scrubber', x: 5, y: 4, radius: 1 },
+      { type: 'building:pulsed', building: 'scrubber', x: 9, y: 4, radius: 2 },
+      { type: 'building:pulsed', building: 'purifier', x: 12, y: 8, radius: 1 },
+    ]);
+  });
+
+  it('every unsealed stack reports its emission reach', () => {
+    const s = blankGame();
+    setTile(s, 4, 3, 'stack');
+    setTile(s, 10, 6, 'stack');
+    s.world.c.ToxicSource[s.tiles[6 * s.width + 10]!] = { sealed: true };
+    const c = ctx(s);
+    pollutionSystem(c);
+    expect(c.events.filter((e) => e.type === 'stack:emitted')).toEqual([{ type: 'stack:emitted', x: 4, y: 3, radius: 3 }]);
+  });
+
+  it('acid rain names exactly the tiles it hit; other events name none', () => {
+    const seen = new Set<string>();
+    for (let seed = 1; seed < 400 && seen.size < 4; seed++) {
+      const s = createGame(seed % 7, 'balanced');
+      s.turn = 5;
+      const before = s.tiles.map((e) => must(s.world, e, 'PollutionLevel').value);
+      const c = ctx(s, seed);
+      const kind = randomEventSystem(c);
+      if (!kind) continue;
+      seen.add(kind);
+      const ev = c.events.find((e) => e.type === 'event:random');
+      expect(ev?.type === 'event:random' && ev.kind).toBe(kind);
+      if (ev?.type !== 'event:random') continue;
+      if (kind !== 'acidRain') {
+        expect(ev.tiles).toEqual([]);
+        continue;
+      }
+      expect(ev.tiles).toHaveLength(ACID_RAIN_TILES);
+      expect(new Set(ev.tiles.map((t) => `${t.x},${t.y}`)).size).toBe(ACID_RAIN_TILES);
+      for (const t of ev.tiles) {
+        const i = t.y * s.width + t.x;
+        const e = s.tiles[i]!;
+        expect(isRestorable(must(s.world, e, 'Terrain').kind)).toBe(true);
+        expect(must(s.world, e, 'PollutionLevel').value).toBe(Math.min(100, before[i]! + ACID_RAIN_AMOUNT));
+      }
+    }
+    expect(seen.has('acidRain')).toBe(true);
   });
 });
