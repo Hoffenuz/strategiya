@@ -1,4 +1,4 @@
-import type { Lang } from '../i18n';
+import { isLang, type Lang } from '../i18n';
 
 export type KeyAction = 'up' | 'down' | 'left' | 'right' | 'activate' | 'endTurn' | 'undo' | 'cancel' | 'nextTool' | 'prevTool' | 'hint' | 'lens';
 
@@ -57,7 +57,7 @@ export function parseSettings(json: string | null, defaults: Settings): Settings
   try {
     const raw = JSON.parse(json) as Partial<Settings>;
     const out: Settings = { ...defaults, keys: { ...defaults.keys } };
-    if (raw.lang === 'en' || raw.lang === 'uz') out.lang = raw.lang;
+    if (isLang(raw.lang)) out.lang = raw.lang;
     if (typeof raw.scale === 'number' && (SCALES as readonly number[]).includes(raw.scale)) out.scale = raw.scale;
     for (const k of ['highContrast', 'reducedMotion', 'sound', 'music', 'patterns', 'tutorial'] as const) {
       if (typeof raw[k] === 'boolean') out[k] = raw[k];

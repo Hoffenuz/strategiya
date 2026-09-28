@@ -27,7 +27,7 @@ import {
 } from '../core/selectors';
 import { createGame, type GameState } from '../core/state';
 import { totalBatteryLevel } from '../core/systems/energy';
-import { getLang, onLangChange, setLang, t, type Lang, type TranslationKey } from '../i18n';
+import { detectLang, getLang, LANG_NAMES, LANG_SHORT, LANGS, nextLang, onLangChange, setLang, t, type Lang, type TranslationKey } from '../i18n';
 import { EMIT_DELAY, FxLayer, sourcesFromState } from '../render/fx';
 import { mixHex, paletteFor, shadeHex } from '../render/palette';
 import { LENSES, Renderer, rangeFor, TILE, ZOOM, type Lens } from '../render/renderer';
@@ -160,7 +160,7 @@ export class App {
 
   constructor(private root: HTMLElement) {
     const prefersReduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const browserLang: Lang = (navigator.language ?? '').toLowerCase().startsWith('uz') ? 'uz' : 'en';
+    const browserLang: Lang = detectLang(navigator.language ?? '');
     this.settings = parseSettings(readStore(SETTINGS_KEY), defaultSettings(prefersReduced, browserLang));
     this.achievements = parseAchievements(readStore(ACH_KEY));
     this.records = parseRecords(readStore(RECORDS_KEY));
@@ -440,8 +440,9 @@ export class App {
     this.applySettings();
   }
 
+  /** Cycles English → O'zbekcha → Ўзбекча → Русский (R-12.5). */
   private toggleLang(): void {
-    this.updateSettings({ lang: getLang() === 'en' ? 'uz' : 'en' });
+    this.updateSettings({ lang: nextLang(getLang()) });
   }
 
   // ───────────────────────── screens ─────────────────────────
@@ -479,7 +480,11 @@ export class App {
         h('button', { class: 'btn', onclick: () => this.showHelp() }, t('menu.howToPlay')),
         h('button', { class: 'btn', onclick: () => this.showAchievements() }, t('menu.achievements')),
         h('button', { class: 'btn', onclick: () => this.showSettings() }, t('menu.settings')),
-        h('button', { class: 'btn ghost', onclick: () => this.toggleLang(), 'aria-label': t('a11y.langToggle') }, getLang() === 'en' ? "O'zbekcha" : 'English'),
+        h(
+          'button',
+          { class: 'btn ghost', onclick: () => this.toggleLang(), 'aria-label': `${t('a11y.langToggle')}: ${LANG_NAMES[nextLang(getLang())]}`, lang: nextLang(getLang()) },
+          LANG_NAMES[nextLang(getLang())],
+        ),
       ),
       h('p', { class: 'fine' }, t('menu.saveNote')),
     );
@@ -864,7 +869,16 @@ export class App {
         wins ? h('span', { class: 'turn-chip win', 'aria-hidden': 'true' }, icon('star')) : null,
         lastTurn ? h('span', { class: 'turn-chip last', 'aria-hidden': 'true' }, t('forecast.lastTurn')) : null,
       ),
-      h('button', { class: 'btn ghost', onclick: () => this.toggleLang(), 'aria-label': t('a11y.langToggle') }, getLang() === 'en' ? 'UZ' : 'EN'),
+      h(
+        'button',
+        {
+          class: 'btn ghost lang-btn',
+          onclick: () => this.toggleLang(),
+          'aria-label': `${t('a11y.langToggle')}: ${LANG_NAMES[nextLang(getLang())]}`,
+          title: `${LANG_NAMES[getLang()]} → ${LANG_NAMES[nextLang(getLang())]}`,
+        },
+        LANG_SHORT[nextLang(getLang())],
+      ),
       h('button', { class: 'btn ghost', onclick: () => this.showPause() }, icon('menu'), h('span', { class: 'btn-label hide-sm' }, t('menu.pause'))),
     );
   }
@@ -1570,8 +1584,7 @@ export class App {
                 document.getElementById('set-lang')?.focus();
               },
             },
-            h('option', { value: 'en', selected: st.lang === 'en' }, 'English'),
-            h('option', { value: 'uz', selected: st.lang === 'uz' }, "O'zbekcha"),
+            ...LANGS.map((l) => h('option', { value: l, selected: st.lang === l, lang: l }, LANG_NAMES[l])),
           ),
         ),
         h(
