@@ -34,6 +34,11 @@ export class Audio {
     bus.on('event:random', (e) => this.play(e.kind === 'acidRain' ? 'bad' : 'restore'));
   }
 
+  /** The shared audio context (null until a user gesture unlocked it); music plays through it too. */
+  get context(): AudioContext | null {
+    return this.ctx;
+  }
+
   /** Must be called from a user gesture before sound can play. */
   unlock(): void {
     if (this.ctx) return;

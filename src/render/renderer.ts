@@ -1,16 +1,31 @@
 import type { GameState } from '../core/state';
-import { allTileInfo, pollutionBand, tileInfo, type TileInfo } from '../core/selectors';
-import { restorationSummary } from '../core/systems/restorable';
+import { allTileInfo, floraSprite, pollutionBand, tileInfo, worldProgress, type TileInfo } from '../core/selectors';
 import { EMISSION } from '../core/config';
 import { scrubberRadius } from '../core/economy/formulas';
 import { paletteFor, shadeHex, mixHex, type WorldPalette } from './palette';
-import { spriteCanvas } from './sprites';
+import { DIGITS, spriteCanvas } from './sprites';
 
 export const TILE = 16;
 export const ZOOM = 3;
 const PX = TILE * ZOOM;
 
+/** Map lenses (R-13.12). */
+export type Lens = 'normal' | 'pollution' | 'restoration';
+export const LENSES: readonly Lens[] = ['normal', 'pollution', 'restoration'];
+
+const ORTHOGONAL: readonly (readonly [number, number])[] = [
+  [0, -1],
+  [1, 0],
+  [0, 1],
+  [-1, 0],
+];
+
 export interface RenderOptions {
+  /** Tile indices (y · width + x) of plants that will wither this turn (R-13.14). */
+  risk: ReadonlySet<number>;
+  /** The tile a hint points at (R-13.13). */
+  hint: { x: number; y: number } | null;
+  lens: Lens;
   cursor: { x: number; y: number } | null;
   /** Tiles to outline as the effect area of the selected tool or hovered building. */
   range: { x: number; y: number; r: number; kind: 'clean' | 'emit' } | null;
@@ -82,19 +97,149 @@ export class Renderer {
 
   draw(s: GameState, opts: RenderOptions): void {
     const ctx = this.ctx;
-    const ratio = restorationSummary(s).ratio;
-    const pal = paletteFor(Math.round(ratio * 20) / 20);
+    // The palette follows progress toward the goal, so every victory is in full Spring (R-11.2).
+    const pal = paletteFor(Math.round(worldProgress(s) * 20) / 20);
     ctx.imageSmoothingEnabled = false;
     ctx.fillStyle = pal.backdrop;
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     const anim = opts.reducedMotion ? 0 : this.frame;
 
-    for (const info of allTileInfo(s)) this.drawTile(info, pal, anim, opts);
+    const infos = allTileInfo(s);
+    const water = infos.map((i) => i.terrain === 'water');
+    const isWater = (x: number, y: number) => x >= 0 && y >= 0 && x < s.width && y < s.height && water[y * s.width + x] === true;
+    for (const info of infos) this.drawTile(info, pal, anim, opts, isWater);
 
+    if (opts.lens === 'pollution') this.drawPollutionLens(s, infos);
+    else if (opts.lens === 'restoration') this.drawRestorationLens(infos);
+    // Doomed plants blink (a steady badge with reduced motion).
+    if (anim % 8 < 5) for (const i of opts.risk) this.drawRisk(i % s.width, Math.floor(i / s.width));
     if (opts.range) this.drawRange(s, opts.range);
+    if (opts.hint) this.drawHint(opts.hint, anim, opts.highContrast);
     if (opts.cursor && opts.ghost) this.drawGhost(opts.cursor.x, opts.cursor.y, opts.ghost);
     if (opts.cursor) this.drawCursor(opts.cursor.x, opts.cursor.y, anim, opts.highContrast);
     this.drawFloaters(opts.reducedMotion);
+  }
+
+  /** Water meets land: a light foam line on the water, a dark wet line on the land (R-11.14). */
+  private drawBanks(info: TileInfo, pal: WorldPalette, isWater: (x: number, y: number) => boolean): void {
+    const ctx = this.ctx;
+    const t = info.pollution / 100;
+    const water = info.terrain === 'water';
+    const color = water
+      ? shadeHex(mixHex(pal.waterClean, pal.waterToxic, t), 0.35)
+      : shadeHex(info.terrain === 'rock' ? pal.rock : mixHex(pal.soilClean, pal.soilToxic, t), -0.3);
+    const dx = info.x * PX;
+    const dy = info.y * PX;
+    for (const [ox, oy] of ORTHOGONAL) {
+      const nx = info.x + ox;
+      const ny = info.y + oy;
+      if (nx < 0 || ny < 0 || nx >= this.canvas.width / PX || ny >= this.canvas.height / PX) continue;
+      if (isWater(nx, ny) === water) continue;
+      ctx.fillStyle = color;
+      // One art pixel along the shared side; the foam gets a broken second line of ripples.
+      for (let k = 0; k < TILE; k++) {
+        const along = k * ZOOM;
+        const [x1, y1] = ox === 0 ? [dx + along, oy < 0 ? dy : dy + PX - ZOOM] : [ox < 0 ? dx : dx + PX - ZOOM, dy + along];
+        ctx.fillRect(x1, y1, ZOOM, ZOOM);
+        if (water && k % 3 === 1) {
+          const [x2, y2] = ox === 0 ? [x1, y1 + (oy < 0 ? ZOOM : -ZOOM)] : [x1 + (ox < 0 ? ZOOM : -ZOOM), y1];
+          ctx.fillRect(x2, y2, ZOOM, ZOOM);
+        }
+      }
+    }
+  }
+
+  /** A warning triangle on a plant that will wither this turn (R-13.14). */
+  private drawRisk(x: number, y: number): void {
+    const s = spriteCanvas('risk');
+    this.ctx.drawImage(s, x * PX + ZOOM, y * PX + ZOOM, s.width * ZOOM, s.height * ZOOM);
+  }
+
+  /** Marching dashed outline around the tile a hint points at (R-13.13). */
+  private drawHint(t: { x: number; y: number }, anim: number, hc: boolean): void {
+    const ctx = this.ctx;
+    const x = t.x * PX + ZOOM;
+    const y = t.y * PX + ZOOM;
+    const size = PX - 2 * ZOOM;
+    ctx.lineWidth = ZOOM * 2;
+    ctx.strokeStyle = '#000000';
+    ctx.strokeRect(x, y, size, size);
+    ctx.setLineDash([ZOOM * 3, ZOOM * 2]);
+    ctx.lineDashOffset = -anim * ZOOM;
+    ctx.lineWidth = ZOOM;
+    ctx.strokeStyle = hc ? '#00e5ff' : '#ffd166';
+    ctx.strokeRect(x, y, size, size);
+    ctx.setLineDash([]);
+    ctx.lineDashOffset = 0;
+  }
+
+  /** A number in the 3 × 5 pixel font on a dark backing, centred at (cx, cy) in canvas px. */
+  private drawNumber(value: number, cx: number, cy: number, border: string | null): void {
+    const ctx = this.ctx;
+    const text = String(value);
+    const w = text.length * 4 - 1; // 3 px glyphs, 1 px spacing
+    const x0 = Math.round(cx / ZOOM - (w + 2) / 2) * ZOOM;
+    const y0 = Math.round(cy / ZOOM - 3.5) * ZOOM;
+    ctx.fillStyle = 'rgba(12, 14, 20, 0.82)';
+    ctx.fillRect(x0, y0, (w + 2) * ZOOM, 7 * ZOOM);
+    if (border) {
+      ctx.strokeStyle = border;
+      ctx.lineWidth = ZOOM;
+      ctx.strokeRect(x0 - ZOOM / 2, y0 - ZOOM / 2, (w + 3) * ZOOM, 8 * ZOOM);
+    }
+    ctx.fillStyle = '#ffffff';
+    [...text].forEach((ch, i) => {
+      const glyph = DIGITS[ch];
+      if (!glyph) return;
+      glyph.forEach((row, gy) => {
+        for (let gx = 0; gx < row.length; gx++) if (row[gx] === '#') ctx.fillRect(x0 + (1 + i * 4 + gx) * ZOOM, y0 + (1 + gy) * ZOOM, ZOOM, ZOOM);
+      });
+    });
+  }
+
+  /** Pollution lens: every polluted restorable tile's value, and the reach of open stacks. */
+  private drawPollutionLens(s: GameState, infos: TileInfo[]): void {
+    for (const info of infos) {
+      if (info.terrain === 'stack' && info.sealed === false) this.outlineArea(s, info.x, info.y, EMISSION.length, '#ff9d8a', true);
+    }
+    for (const info of infos) {
+      if (info.pollution <= 0 || info.terrain === 'rock' || info.terrain === 'stack') continue;
+      this.drawNumber(info.pollution, info.x * PX + PX / 2, info.y * PX + PX / 2, null);
+    }
+  }
+
+  /** Restoration lens: what every tile still needs to count as restored (R-13.12). */
+  private drawRestorationLens(infos: TileInfo[]): void {
+    const ctx = this.ctx;
+    const badge = (name: string, info: TileInfo) => {
+      const b = spriteCanvas(name);
+      const w = b.width * ZOOM;
+      const h = b.height * ZOOM;
+      ctx.drawImage(b, info.x * PX + (PX - w) / 2, info.y * PX + (PX - h) / 2, w, h);
+    };
+    for (const info of infos) {
+      if (info.terrain === 'rock' || info.terrain === 'stack') {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+        ctx.fillRect(info.x * PX, info.y * PX, PX, PX);
+      } else if (info.restored) badge('okBadge', info);
+      else if (info.pollution > 0 || info.terrain !== 'soil') badge('noBadge', info);
+      else if (info.flora && !info.flora.mature) this.drawNumber(info.flora.turnsLeft, info.x * PX + PX / 2, info.y * PX + PX / 2, '#8fe39a');
+      else badge('plantMark', info);
+    }
+  }
+
+  /** Outline of a Chebyshev area, dashed or solid. */
+  private outlineArea(s: GameState, x: number, y: number, r: number, color: string, dashed: boolean): void {
+    const ctx = this.ctx;
+    const x0 = Math.max(0, x - r) * PX;
+    const y0 = Math.max(0, y - r) * PX;
+    const x1 = Math.min(s.width, x + r + 1) * PX;
+    const y1 = Math.min(s.height, y + r + 1) * PX;
+    ctx.setLineDash(dashed ? [ZOOM * 3, ZOOM * 2] : []);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = ZOOM;
+    ctx.strokeRect(x0 + ZOOM / 2, y0 + ZOOM / 2, x1 - x0 - ZOOM, y1 - y0 - ZOOM);
+    ctx.setLineDash([]);
   }
 
   /** Translucent preview of what the tool would place, plus a check / cross badge. */
@@ -211,7 +356,7 @@ export class Renderer {
     });
   }
 
-  private drawTile(info: TileInfo, pal: WorldPalette, anim: number, opts: RenderOptions): void {
+  private drawTile(info: TileInfo, pal: WorldPalette, anim: number, opts: RenderOptions, isWater: (x: number, y: number) => boolean): void {
     const ctx = this.ctx;
     const dx = info.x * PX;
     const dy = info.y * PX;
@@ -221,6 +366,7 @@ export class Renderer {
       const pat = this.patternTexture(info.band, opts.highContrast);
       if (pat) ctx.drawImage(pat, dx, dy, PX, PX);
     }
+    this.drawBanks(info, pal, isWater);
 
     if (info.terrain === 'ruin') ctx.drawImage(spriteCanvas('ruin'), dx, dy, PX, PX);
     if (info.terrain === 'stack') {
@@ -229,10 +375,7 @@ export class Renderer {
         ctx.drawImage(spriteCanvas('stack'), dx, dy + (anim % 8 < 4 ? 0 : ZOOM), PX, PX);
       }
     }
-    if (info.flora) {
-      const name = info.flora.mature ? info.flora.species : `${info.flora.species}0`;
-      ctx.drawImage(spriteCanvas(name), dx, dy, PX, PX);
-    }
+    if (info.flora) ctx.drawImage(spriteCanvas(floraSprite(info.flora.species, info.flora.stage)), dx, dy, PX, PX);
     if (info.building && info.building.type !== 'sealer') {
       ctx.drawImage(spriteCanvas(info.building.type), dx, dy, PX, PX);
       // Level pips (shape, not only color) for upgraded buildings: one bar per level.

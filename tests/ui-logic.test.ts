@@ -64,6 +64,20 @@ describe('settings (T6.4)', () => {
     expect(parseSettings(JSON.stringify({ scale: 7, lang: 'fr' }), d)).toMatchObject({ scale: 1, lang: 'uz' });
     expect(parseSettings(JSON.stringify({ keys: { up: 'KeyE' } }), d).keys).toEqual(DEFAULT_KEYS);
   });
+
+  it('adds music and the hint / lens keys without losing older custom bindings (T12.1)', () => {
+    const d = defaultSettings(false, 'en');
+    expect(d.music).toBe(true);
+    expect(DEFAULT_KEYS.hint).toBe('KeyH');
+    expect(DEFAULT_KEYS.lens).toBe('KeyL');
+    // Settings saved before these existed: a remapped undo, no music, no hint / lens keys.
+    const old = JSON.stringify({ lang: 'en', sound: false, keys: { up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight', activate: 'Enter', endTurn: 'KeyE', undo: 'KeyU', cancel: 'Escape', nextTool: 'BracketRight', prevTool: 'BracketLeft' } });
+    const p = parseSettings(old, d);
+    expect(p).toMatchObject({ sound: false, music: true });
+    expect(p.keys).toMatchObject({ undo: 'KeyU', hint: 'KeyH', lens: 'KeyL' });
+    expect(parseSettings(JSON.stringify({ music: false }), d).music).toBe(false);
+    expect(rebind(DEFAULT_KEYS, 'hint', 'KeyL')).toEqual({ ok: false, conflict: 'lens' });
+  });
 });
 
 describe('achievements (T6.6)', () => {

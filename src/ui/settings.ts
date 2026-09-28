@@ -1,8 +1,8 @@
 import type { Lang } from '../i18n';
 
-export type KeyAction = 'up' | 'down' | 'left' | 'right' | 'activate' | 'endTurn' | 'undo' | 'cancel' | 'nextTool' | 'prevTool';
+export type KeyAction = 'up' | 'down' | 'left' | 'right' | 'activate' | 'endTurn' | 'undo' | 'cancel' | 'nextTool' | 'prevTool' | 'hint' | 'lens';
 
-export const KEY_ACTIONS: readonly KeyAction[] = ['up', 'down', 'left', 'right', 'activate', 'endTurn', 'undo', 'cancel', 'nextTool', 'prevTool'];
+export const KEY_ACTIONS: readonly KeyAction[] = ['up', 'down', 'left', 'right', 'activate', 'endTurn', 'undo', 'cancel', 'nextTool', 'prevTool', 'hint', 'lens'];
 
 export const DEFAULT_KEYS: Record<KeyAction, string> = {
   up: 'ArrowUp',
@@ -15,6 +15,8 @@ export const DEFAULT_KEYS: Record<KeyAction, string> = {
   cancel: 'Escape',
   nextTool: 'BracketRight',
   prevTool: 'BracketLeft',
+  hint: 'KeyH',
+  lens: 'KeyL',
 };
 
 /** Keys reserved for tool shortcuts (1–9) and so never remappable to other actions. */
@@ -28,6 +30,8 @@ export interface Settings {
   highContrast: boolean;
   reducedMotion: boolean;
   sound: boolean;
+  /** The generative soundtrack, separate from sound effects (R-11.18). */
+  music: boolean;
   patterns: boolean;
   tutorial: boolean;
   keys: Record<KeyAction, string>;
@@ -40,6 +44,7 @@ export function defaultSettings(prefersReducedMotion = false, lang: Lang = 'en')
     highContrast: false,
     reducedMotion: prefersReducedMotion,
     sound: true,
+    music: true,
     patterns: true,
     tutorial: true,
     keys: { ...DEFAULT_KEYS },
@@ -54,7 +59,7 @@ export function parseSettings(json: string | null, defaults: Settings): Settings
     const out: Settings = { ...defaults, keys: { ...defaults.keys } };
     if (raw.lang === 'en' || raw.lang === 'uz') out.lang = raw.lang;
     if (typeof raw.scale === 'number' && (SCALES as readonly number[]).includes(raw.scale)) out.scale = raw.scale;
-    for (const k of ['highContrast', 'reducedMotion', 'sound', 'patterns', 'tutorial'] as const) {
+    for (const k of ['highContrast', 'reducedMotion', 'sound', 'music', 'patterns', 'tutorial'] as const) {
       if (typeof raw[k] === 'boolean') out[k] = raw[k];
     }
     if (raw.keys && typeof raw.keys === 'object') {

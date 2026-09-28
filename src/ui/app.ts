@@ -1,4 +1,6 @@
 import { applyAction, type Action, type Intent } from '../core/actions';
+import { advise, type Advice } from '../core/advisor';
+import { forecastResolution, type ResolutionForecast } from '../core/forecast';
 import { DIFFICULTIES, K_MANUAL, K_REC, R_BASE, SPECIES, type Difficulty } from '../core/config';
 import { buildingCost, energyCapacity, producerOutput, salvageYield } from '../core/economy/formulas';
 import { EventBus, type GameEvent } from '../core/events';
@@ -17,19 +19,26 @@ import {
   toolGroup,
   toolId,
   toolIntent,
+  floraSprite,
+  worldProgress,
+  worldStage,
   type Tool,
+  type WorldStage,
 } from '../core/selectors';
 import { createGame, type GameState } from '../core/state';
 import { totalBatteryLevel } from '../core/systems/energy';
 import { getLang, onLangChange, setLang, t, type Lang, type TranslationKey } from '../i18n';
-import { FxLayer, sourcesFromState } from '../render/fx';
+import { EMIT_DELAY, FxLayer, sourcesFromState } from '../render/fx';
 import { mixHex, paletteFor, shadeHex } from '../render/palette';
-import { Renderer, rangeFor, TILE, ZOOM } from '../render/renderer';
+import { LENSES, Renderer, rangeFor, TILE, ZOOM, type Lens } from '../render/renderer';
 import { spriteCanvas, spriteDataUrl } from '../render/sprites';
 import { ACHIEVEMENTS, parseAchievements, unlockedBy, type AchievementId } from './achievements';
 import { Audio } from './audio';
+import { chartElement, chartModel } from './chart';
 import { $, clear, h } from './dom';
 import { icon, type IconName } from './icons';
+import { Music } from './music';
+import { parseRecords, recordGame, type RecordUpdate, type Records } from './records';
 import {
   actionForCode,
   defaultSettings,
@@ -48,7 +57,30 @@ import { applyTheme, THEMES } from './theme';
 const SAVE_KEY = 'terra-revival:save';
 const SETTINGS_KEY = 'terra-revival:settings';
 const ACH_KEY = 'terra-revival:achievements';
+const RECORDS_KEY = 'terra-revival:records';
 const LOG_LIMIT = 60;
+/** How long the turn-report chips stay next to the values (R-11.19). */
+const DELTA_MS = 6000;
+const STAGE_ORDER: Record<WorldStage, number> = { collapse: 0, transition: 1, revival: 2 };
+
+/** Palette tool id for a suggested move (hint "Show me"). */
+function toolIdOf(intent: Exclude<Intent, { kind: 'endTurn' }>): string {
+  switch (intent.kind) {
+    case 'build':
+      return `build:${intent.building}`;
+    case 'plant':
+      return `plant:${intent.species}`;
+    default:
+      return intent.kind;
+  }
+}
+
+interface TurnDelta {
+  gold: number;
+  energy: number;
+  restored: number;
+  pollution: number;
+}
 
 type LogKind = 'info' | 'good' | 'bad' | 'turn';
 interface LogEntry {
@@ -112,21 +144,41 @@ export class App {
   /** Particle layers over the map and the title art (R-11.7); fed by the bus only. */
   private fx: FxLayer | null = null;
   private titleFx: FxLayer | null = null;
+  private music: Music;
+  private records: Records;
+  /** The game already folded into the records, so a redraw never counts it twice. */
+  private recorded: { key: string; update: RecordUpdate } | null = null;
+  /** Forecast of the coming resolution (R-13.14), refreshed on every state change. */
+  private forecast: ResolutionForecast | null = null;
+  private risk = new Set<number>();
+  private lens: Lens = 'normal';
+  /** The visible hint and the tile it points at (R-13.13). */
+  private advice: Advice | null = null;
+  private turnDelta: TurnDelta | null = null;
+  private deltaTimer: ReturnType<typeof setTimeout> | null = null;
+  private stage: WorldStage | null = null;
 
   constructor(private root: HTMLElement) {
     const prefersReduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
     const browserLang: Lang = (navigator.language ?? '').toLowerCase().startsWith('uz') ? 'uz' : 'en';
     this.settings = parseSettings(readStore(SETTINGS_KEY), defaultSettings(prefersReduced, browserLang));
     this.achievements = parseAchievements(readStore(ACH_KEY));
+    this.records = parseRecords(readStore(RECORDS_KEY));
     setLang(this.settings.lang);
     this.audio = new Audio(this.bus);
     this.audio.enabled = this.settings.sound;
+    this.music = new Music(() => this.audio.context);
     this.wireBus();
     onLangChange(() => this.renderAll());
     this.applySettings();
     document.addEventListener('keydown', (e) => this.onKey(e));
-    document.addEventListener('pointerdown', () => this.audio.unlock(), { once: true });
-    document.addEventListener('keydown', () => this.audio.unlock(), { once: true });
+    // Browsers only allow sound after a user gesture.
+    const unlock = () => {
+      this.audio.unlock();
+      this.music.start();
+    };
+    document.addEventListener('pointerdown', unlock, { once: true });
+    document.addEventListener('keydown', unlock, { once: true });
     this.showTitle();
     this.loop();
   }
@@ -138,19 +190,28 @@ export class App {
     if (!s) return false;
     const action = { ...intent, txId: `ui${Date.now().toString(36)}-${this.tx++}` } as Action;
     const { state: next, events } = applyAction(s, action);
-    if (next !== s) {
+    const changed = next !== s;
+    if (changed) {
       if (intent.kind === 'endTurn') this.undoStack = [];
       else this.undoStack.push(s);
       this.state = next;
       this.save();
+      // A hint describes the state it was given for; any change makes it stale.
+      this.closeHint();
+      if (intent.kind === 'endTurn') this.reportTurn(s, next);
+      else this.clearTurnReport();
+      this.refreshForecast();
     }
     this.bus.emitAll(events);
     this.dirty = true;
-    if (next !== s) this.syncFx();
+    if (changed) {
+      this.syncFx();
+      this.checkStage(true);
+    }
     this.renderHud();
     this.renderTools();
     this.renderInspector();
-    return next !== s;
+    return changed;
   }
 
   private undo(): void {
@@ -158,12 +219,80 @@ export class App {
     if (!prev || !this.state || isTerminal(this.state.phase)) return;
     this.state = prev;
     this.save();
+    this.closeHint();
+    this.refreshForecast();
     this.pushLog({ key: 'log.undo', kind: 'info' });
     this.dirty = true;
     this.syncFx();
+    this.checkStage(false);
     this.renderHud();
     this.renderTools();
     this.renderInspector();
+  }
+
+  /** Exact forecast of the coming resolution (R-13.14) and the doomed-plant index for the map. */
+  private refreshForecast(): void {
+    const s = this.state;
+    this.forecast = s ? forecastResolution(s) : null;
+    this.risk = new Set((this.forecast?.withered ?? []).map((p) => p.y * (s?.width ?? 0) + p.x));
+  }
+
+  /** Turn report (R-11.19): what the resolution and the preparation changed. */
+  private reportTurn(prev: GameState, next: GameState): void {
+    this.clearTurnReport();
+    if (isTerminal(next.phase)) return;
+    const a = summary(prev);
+    const b = summary(next);
+    this.turnDelta = {
+      gold: next.gold.balance - prev.gold.balance,
+      energy: next.energy.current - prev.energy.current,
+      restored: Math.round(b.ratio * 100) - Math.round(a.ratio * 100),
+      pollution: Math.round(b.averagePollution) - Math.round(a.averagePollution),
+    };
+    this.deltaTimer = setTimeout(() => {
+      this.turnDelta = null;
+      this.renderHud();
+    }, DELTA_MS);
+  }
+
+  private clearTurnReport(): void {
+    if (this.deltaTimer !== null) clearTimeout(this.deltaTimer);
+    this.deltaTimer = null;
+    this.turnDelta = null;
+  }
+
+  /**
+   * Follows the world stage (R-11.12): music mood always; a banner, chronicle entry and
+   * announcement when `announce` is set and the stage moved forward.
+   */
+  private checkStage(announce: boolean): void {
+    const s = this.state;
+    if (!s) return;
+    const stage = worldStage(worldProgress(s));
+    const prev = this.stage;
+    this.stage = stage;
+    this.music.setMood(stage);
+    if (!announce || prev === null || prev === stage) return;
+    const name = { t: `stage.${stage}` as TranslationKey };
+    if (STAGE_ORDER[stage] > STAGE_ORDER[prev]) {
+      this.pushLog({ key: 'log.stage', params: { name }, kind: 'good' });
+      this.announce(`${t(`stage.${stage}` as TranslationKey)}. ${t(`stage.${stage}.line` as TranslationKey)}`);
+      this.showStageBanner(stage);
+    } else this.pushLog({ key: 'log.stageBack', params: { name }, kind: 'bad' });
+  }
+
+  private showStageBanner(stage: WorldStage): void {
+    const frame = document.getElementById('map-frame');
+    if (!frame) return;
+    frame.querySelector('.stage-banner')?.remove();
+    const banner = h(
+      'div',
+      { class: `stage-banner stage-${stage}`, 'aria-hidden': 'true' },
+      h('strong', {}, t(`stage.${stage}` as TranslationKey)),
+      h('span', {}, t(`stage.${stage}.line` as TranslationKey)),
+    );
+    frame.append(banner);
+    setTimeout(() => banner.remove(), 2800);
   }
 
   /** Ambient particles follow the world: pollen over restored land, smog over open stacks. */
@@ -212,6 +341,9 @@ export class App {
     });
     b.on('building:toggled', (e) => this.pushLog({ key: e.enabled ? 'log.toggledOn' : 'log.toggledOff', params: { name: name(`building.${e.building}`) }, kind: 'info' }));
     b.on('building:unpowered', (e) => this.pushLog({ key: 'log.unpowered', params: { name: name(`building.${e.building}`) }, kind: 'bad' }));
+    // Resolution waves (R-11.17): cleansing first, then emission.
+    b.on('building:pulsed', (e) => this.fx?.pulse('clean', e.x, e.y, e.radius));
+    b.on('stack:emitted', (e) => this.fx?.pulse('emit', e.x, e.y, e.radius, EMIT_DELAY));
     b.on('tile:cleaned', (e) => {
       this.pushLog({ key: 'log.cleaned', params: { amount: e.amount }, kind: 'good' });
       this.renderer?.addFloater(e.x, e.y, `-${e.amount}`, '#7fd8ff');
@@ -248,9 +380,13 @@ export class App {
     });
     b.on('event:random', (e) => {
       const key = `event.${e.kind}` as TranslationKey;
-      this.pushLog({ key, params: { amount: e.kind === 'acidRain' ? 5 : e.amount }, kind: e.kind === 'acidRain' ? 'bad' : 'good' });
-      this.announce(t(key, { amount: e.kind === 'acidRain' ? 5 : e.amount }));
+      const amount = e.kind === 'acidRain' ? e.tiles.length : e.amount;
+      this.pushLog({ key, params: { amount }, kind: e.kind === 'acidRain' ? 'bad' : 'good' });
+      this.announce(t(key, { amount }));
       if (e.kind === 'acidRain') this.shake();
+      // The event made visible as weather (R-11.16).
+      const s = this.state;
+      if (s) this.fx?.weather(e.kind, { width: s.width, height: s.height, tiles: e.tiles, at: this.findSanctuary(s) });
     });
     b.on('action:rejected', (e) => {
       const reason = `reason.${e.reason}` as TranslationKey;
@@ -293,6 +429,7 @@ export class App {
     this.fx?.setEnabled(!this.settings.reducedMotion);
     this.titleFx?.setEnabled(!this.settings.reducedMotion);
     this.audio.enabled = this.settings.sound;
+    this.music.setEnabled(this.settings.music);
     writeStore(SETTINGS_KEY, JSON.stringify(this.settings));
     this.dirty = true;
   }
@@ -313,6 +450,12 @@ export class App {
     this.state = null;
     this.renderer = null;
     this.fx = null;
+    this.forecast = null;
+    this.risk = new Set();
+    this.advice = null;
+    this.stage = null;
+    this.clearTurnReport();
+    this.music.setMood('transition');
     clear(this.root);
     document.getElementById('overlay')?.remove();
     this.modalOpen = false;
@@ -405,11 +548,25 @@ export class App {
     const cards = (['gentle', 'balanced', 'hard'] as Difficulty[]).map((d) => {
       const def = DIFFICULTIES[d];
       const input = h('input', { type: 'radio', name: 'difficulty', value: d, checked: d === difficulty, onchange: () => (difficulty = d) });
+      // Local records (R-10.7): a reason to come back.
+      const r = this.records[d];
+      const record =
+        r.wins > 0 && r.bestScore !== null && r.fewestTurns !== null
+          ? h('span', { class: 'choice-record' }, icon('star', 'gold'), t('records.best', { score: r.bestScore, turns: r.fewestTurns, wins: r.wins, played: r.played }))
+          : r.played > 0
+            ? h('span', { class: 'choice-record' }, t('records.played', { played: r.played }))
+            : null;
       return h(
         'label',
         { class: 'choice' },
         input,
-        h('span', { class: 'choice-body' }, h('strong', {}, t(`difficulty.${d}` as TranslationKey)), h('span', {}, t(`difficulty.${d}.desc` as TranslationKey, { win: Math.round(def.winRatio * 100), turns: def.turnLimit ?? '∞' }))),
+        h(
+          'span',
+          { class: 'choice-body' },
+          h('strong', {}, t(`difficulty.${d}` as TranslationKey)),
+          h('span', {}, t(`difficulty.${d}.desc` as TranslationKey, { win: Math.round(def.winRatio * 100), turns: def.turnLimit ?? '∞' })),
+          record,
+        ),
       );
     });
     this.openModal(t('menu.newGame'), [
@@ -445,8 +602,14 @@ export class App {
     this.undoStack = [];
     this.log = [];
     this.tool = null;
+    this.advice = null;
+    this.recorded = null;
+    this.clearTurnReport();
     this.cursor = this.findSanctuary(s);
     this.save();
+    this.refreshForecast();
+    this.stage = null;
+    this.checkStage(false);
     this.buildGameScreen();
     if (fresh) this.showStory();
     else this.pushLog({ key: 'log.resumed', params: { turn: s.turn }, kind: 'turn' });
@@ -498,7 +661,13 @@ export class App {
         h(
           'main',
           { class: 'play' },
-          h('section', { class: 'map-area' }, h('div', { class: 'map-frame', id: 'map-frame' }, canvas, fxCanvas), h('p', { class: 'hint', id: 'keys-hint' })),
+          h(
+            'section',
+            { class: 'map-area' },
+            h('div', { class: 'map-frame', id: 'map-frame' }, canvas, fxCanvas),
+            h('div', { class: 'map-bar' }, h('div', { class: 'lens-control', id: 'lens-control', role: 'radiogroup' }), h('button', { class: 'btn small hint-btn', id: 'hint-btn', onclick: () => this.toggleHint() })),
+            h('p', { class: 'hint', id: 'keys-hint' }),
+          ),
           h(
             'aside',
             { class: 'side' },
@@ -534,6 +703,12 @@ export class App {
         this.selectTool(null);
         return;
       }
+      // Touch has no hover: the first tap previews, a second tap on the same tile acts (R-2.8).
+      const touch = e.pointerType === 'touch' || e.pointerType === 'pen';
+      if (touch && this.tool !== null && (p.x !== this.cursor.x || p.y !== this.cursor.y)) {
+        this.setCursor(p.x, p.y);
+        return;
+      }
       this.setCursor(p.x, p.y);
       this.activate();
     });
@@ -549,6 +724,8 @@ export class App {
     const hint = document.getElementById('keys-hint');
     if (!hint) return;
     hint.textContent = t('hud.keysHint');
+    this.renderMapBar();
+    if (this.advice) this.renderHintCard();
     $('#tools-h').textContent = t('hud.tools');
     $('#insp-h').textContent = t('hud.inspector');
     $('#log-h').textContent = t('hud.log');
@@ -569,6 +746,16 @@ export class App {
     this.dirty = true;
   }
 
+  /**
+   * A turn-report chip (R-11.19): an up / down mark plus a signed number, colored by whether
+   * the change is good. Decorative for screen readers, who hear the turn announcement.
+   */
+  private deltaChip(value: number | undefined, goodWhenUp: boolean): HTMLElement | null {
+    if (value === undefined || value === 0) return null;
+    const good = value > 0 === goodWhenUp;
+    return h('span', { class: `delta ${good ? 'good' : 'bad'}`, 'aria-hidden': 'true' }, icon(value > 0 ? 'up' : 'down'), `${value > 0 ? '+' : '−'}${Math.abs(value)}`);
+  }
+
   private renderHud(): void {
     const s = this.state;
     const stats = document.getElementById('stats');
@@ -577,6 +764,10 @@ export class App {
     const sum = summary(s);
     const pct = Math.round(sum.ratio * 100);
     const goal = Math.round(sum.winRatio * 100);
+    const d = this.turnDelta;
+    const next = this.forecast;
+    const nextPct = next ? Math.round(next.ratio * 100) : pct;
+    const stage = worldStage(worldProgress(s));
     clear(stats);
     stats.append(
       h(
@@ -584,7 +775,7 @@ export class App {
         { class: 'stat gold', title: t('hud.goldTip', { income: f.income }) },
         h('img', { src: spriteDataUrl('coin'), alt: '', class: 'icon' }),
         h('span', { class: 'stat-label' }, t('hud.gold')),
-        h('b', { class: 'stat-value' }, s.gold.balance),
+        h('b', { class: 'stat-value' }, s.gold.balance, this.deltaChip(d?.gold, true)),
         h('small', {}, t('hud.goldTip', { income: f.income })),
       ),
       h(
@@ -592,7 +783,7 @@ export class App {
         { class: 'stat energy', title: t('hud.energyTip', { production: f.production, max: f.capacity, upkeep: f.upkeep }) },
         h('img', { src: spriteDataUrl('bolt'), alt: '', class: 'icon' }),
         h('span', { class: 'stat-label' }, t('hud.energy')),
-        h('b', { class: 'stat-value' }, `${s.energy.current}/${s.energy.max}`),
+        h('b', { class: 'stat-value' }, `${s.energy.current}/${s.energy.max}`, this.deltaChip(d?.energy, true)),
         h('small', {}, t('hud.energyTip', { production: f.production, max: f.capacity, upkeep: f.upkeep })),
       ),
       h(
@@ -605,24 +796,34 @@ export class App {
       ),
       h(
         'div',
-        { class: 'stat progress' },
+        { class: 'stat progress', title: next && nextPct !== pct ? t('forecast.restored', { pct: nextPct }) : null },
         h('img', { src: spriteDataUrl('sprout'), alt: '', class: 'icon' }),
         h('span', { class: 'stat-label' }, t('hud.restored')),
-        h('b', { class: 'stat-value' }, `${pct}%`),
+        h('b', { class: 'stat-value' }, `${pct}%`, this.deltaChip(d?.restored, true)),
         h(
           'div',
-          { class: 'bar', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': pct, 'aria-label': t('hud.restored') },
+          {
+            class: 'bar',
+            role: 'progressbar',
+            'aria-valuemin': 0,
+            'aria-valuemax': 100,
+            'aria-valuenow': pct,
+            'aria-label': t('hud.restored'),
+            'aria-valuetext': nextPct !== pct ? `${pct}% · ${t('forecast.restored', { pct: nextPct })}` : `${pct}%`,
+          },
           h('div', { class: 'bar-fill', style: `width:${Math.min(100, pct)}%` }),
+          // The forecast restoration after this turn (R-13.14), hatched so it reads as "not yet".
+          nextPct > pct ? h('div', { class: 'bar-forecast', style: `left:${pct}%;width:${Math.min(100, nextPct) - pct}%` }) : null,
           h('div', { class: 'bar-goal', style: `left:${goal}%` }),
         ),
-        h('small', {}, `${t('hud.goal')}: ${goal}%`),
+        h('small', {}, `${t('hud.goal')}: ${goal}% · ${t(`stage.${stage}` as TranslationKey)}`),
       ),
       h(
         'div',
         { class: 'stat pollution' },
         h('img', { src: spriteDataUrl('smog'), alt: '', class: 'icon' }),
         h('span', { class: 'stat-label' }, t('hud.pollution')),
-        h('b', { class: 'stat-value' }, Math.round(sum.averagePollution)),
+        h('b', { class: 'stat-value' }, Math.round(sum.averagePollution), this.deltaChip(d?.pollution, false)),
         h('small', {}, t('hud.pollutionNote', { band: t(`band.${pollutionBand(Math.round(sum.averagePollution))}` as TranslationKey) })),
       ),
     );
@@ -631,6 +832,16 @@ export class App {
     const over = isTerminal(s.phase);
     // Out of Energy: gently point at End turn (a glow, or a static ring under reduced motion).
     const nudge = !over && s.energy.current === 0;
+    // Forecast on End turn (R-13.14): doomed plants, a winning turn, the last turn.
+    const doomed = next?.withered.length ?? 0;
+    const wins = next?.outcome?.result === 'victory';
+    const lastTurn = !over && !wins && sum.turnLimit !== null && s.turn >= sum.turnLimit;
+    const notes = [
+      doomed > 0 ? t('forecast.atRisk', { count: doomed }) : '',
+      wins ? t('forecast.win') : '',
+      lastTurn ? t('forecast.lastTurn') : '',
+    ].filter(Boolean);
+    const endLabel = `${t('hud.endTurn')} (${keyLabel(this.settings.keys.endTurn)})`;
     actions.append(
       h(
         'button',
@@ -640,9 +851,18 @@ export class App {
       ),
       h(
         'button',
-        { class: `btn primary end-turn${nudge ? ' nudge' : ''}`, onclick: () => this.endTurn(), disabled: over, title: `${t('hud.endTurn')} (${keyLabel(this.settings.keys.endTurn)})` },
+        {
+          class: `btn primary end-turn${nudge ? ' nudge' : ''}${wins ? ' will-win' : ''}`,
+          onclick: () => this.endTurn(),
+          disabled: over,
+          title: [endLabel, ...notes].join('\n'),
+          'aria-label': [t('hud.endTurn'), ...notes].join('. '),
+        },
         t('hud.endTurn'),
         icon('play', 'after'),
+        doomed > 0 ? h('span', { class: 'turn-chip bad', 'aria-hidden': 'true' }, icon('warn'), String(doomed)) : null,
+        wins ? h('span', { class: 'turn-chip win', 'aria-hidden': 'true' }, icon('star')) : null,
+        lastTurn ? h('span', { class: 'turn-chip last', 'aria-hidden': 'true' }, t('forecast.lastTurn')) : null,
       ),
       h('button', { class: 'btn ghost', onclick: () => this.toggleLang(), 'aria-label': t('a11y.langToggle') }, getLang() === 'en' ? 'UZ' : 'EN'),
       h('button', { class: 'btn ghost', onclick: () => this.showPause() }, icon('menu'), h('span', { class: 'btn-label hide-sm' }, t('menu.pause'))),
@@ -699,7 +919,8 @@ export class App {
     clear(grid);
     const help = $('#tool-help');
     const selected = this.tool !== null ? TOOLS[this.tool]! : null;
-    help.textContent = selected ? this.toolDescription(selected) : t('hud.selectTool');
+    const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+    help.textContent = selected ? `${this.toolDescription(selected)}${coarse ? ` ${t('hud.touchHint')}` : ''}` : t('hud.selectTool');
     let group: string | null = null;
     const hint = this.tutorialTool();
     TOOLS.forEach((tool, i) => {
@@ -754,6 +975,7 @@ export class App {
     const rows: HTMLElement[] = [
       h('p', { class: 'insp-title' }, h('strong', {}, t(`terrain.${info.terrain}` as TranslationKey)), h('span', { class: 'muted' }, ' · ', t('info.position', { x: info.x + 1, y: info.y + 1 }))),
     ];
+    const tileIndex = info.y * s.width + info.x;
     if (info.terrain !== 'rock' && info.terrain !== 'stack') {
       rows.push(
         h(
@@ -763,6 +985,11 @@ export class App {
           h('div', { class: 'bar small', 'aria-hidden': 'true' }, h('div', { class: 'bar-fill bad', style: `width:${info.pollution}%` })),
         ),
       );
+      // The exact pollution after the coming resolution (R-13.14), with a direction mark.
+      const after = this.forecast?.pollution[tileIndex];
+      if (after !== undefined && after !== info.pollution) {
+        rows.push(h('p', { class: `small forecast ${after < info.pollution ? 'good' : 'bad'}` }, icon(after < info.pollution ? 'down' : 'up'), t('forecast.after', { value: after })));
+      }
       rows.push(h('p', { class: info.restored ? 'good' : 'muted' }, icon(info.restored ? 'leaf' : 'ring'), t(info.restored ? 'info.restored' : 'info.notRestored')));
     }
     if (info.salvage) rows.push(h('p', {}, t('info.scrap', { remaining: info.salvage.remaining, gold: salvageYield(info.salvage.density) })));
@@ -792,12 +1019,25 @@ export class App {
     }
     if (info.flora) {
       const f = info.flora;
+      const doomed = this.risk.has(tileIndex);
+      const after = this.forecast?.pollution[tileIndex] ?? info.pollution;
       rows.push(
         h(
           'div',
-          { class: 'insp-card' },
-          h('img', { src: spriteDataUrl(f.mature ? f.species : `${f.species}0`), alt: '', class: 'tool-icon' }),
-          h('div', {}, h('strong', {}, t(`species.${f.species}` as TranslationKey)), h('p', { class: 'small' }, f.mature ? t('info.mature') : t('info.growth', { growth: f.growth, max: f.maturation }))),
+          { class: `insp-card${doomed ? ' doomed' : ''}` },
+          h('img', { src: spriteDataUrl(floraSprite(f.species, f.stage)), alt: '', class: 'tool-icon' }),
+          h(
+            'div',
+            {},
+            h('strong', {}, t(`species.${f.species}` as TranslationKey)),
+            h(
+              'p',
+              { class: 'small' },
+              f.mature ? t('info.mature') : `${t(`info.stage.${f.stage}` as TranslationKey)} · ${t('info.growth', { growth: f.growth, max: f.maturation })}`,
+            ),
+            f.mature ? null : h('p', { class: 'small muted' }, t('info.turnsLeft', { turns: f.turnsLeft })),
+            doomed ? h('p', { class: 'small bad' }, icon('warn'), t('forecast.wither', { after, limit: SPECIES[f.species].withers })) : null,
+          ),
         ),
       );
     }
@@ -951,10 +1191,124 @@ export class App {
       case 'prevTool':
         this.selectTool(this.tool === null ? TOOLS.length - 1 : (this.tool - 1 + TOOLS.length) % TOOLS.length);
         break;
+      case 'hint':
+        this.toggleHint();
+        break;
+      case 'lens':
+        this.setLens(LENSES[(LENSES.indexOf(this.lens) + 1) % LENSES.length]!, true);
+        break;
       default:
         return;
     }
     e.preventDefault();
+  }
+
+  // ───────────────────────── lenses and hints ─────────────────────────
+
+  /** The lens control next to the map (R-13.12): a radio group of three pressed buttons. */
+  private renderMapBar(): void {
+    const group = document.getElementById('lens-control');
+    const hintBtn = document.getElementById('hint-btn');
+    if (!group || !hintBtn) return;
+    group.setAttribute('aria-label', t('a11y.lens'));
+    clear(group);
+    group.append(
+      h('span', { class: 'lens-label', 'aria-hidden': 'true' }, icon('eye')),
+      ...LENSES.map((l) =>
+        h(
+          'button',
+          {
+            class: `btn small lens-btn${l === this.lens ? ' active' : ''}`,
+            role: 'radio',
+            'aria-checked': l === this.lens ? 'true' : 'false',
+            title: `${t(`lens.${l}` as TranslationKey)} (${keyLabel(this.settings.keys.lens)})`,
+            onclick: () => this.setLens(l, true),
+          },
+          t(`lens.${l}` as TranslationKey),
+        ),
+      ),
+    );
+    clear(hintBtn);
+    hintBtn.append(icon('bulb'), t('hud.hint'), h('kbd', { class: 'kbd-after' }, keyLabel(this.settings.keys.hint)));
+    hintBtn.setAttribute('aria-pressed', this.advice ? 'true' : 'false');
+    hintBtn.toggleAttribute('disabled', !this.state || isTerminal(this.state.phase));
+  }
+
+  private setLens(lens: Lens, announce: boolean): void {
+    this.lens = lens;
+    this.dirty = true;
+    this.renderMapBar();
+    if (announce) this.announce(t('lens.announce', { name: t(`lens.${lens}` as TranslationKey) }));
+  }
+
+  /** Opens the Guardian's advice (R-13.13), or closes it when it is already open. */
+  private toggleHint(): void {
+    const s = this.state;
+    if (this.advice) {
+      this.closeHint();
+      return;
+    }
+    if (!s || isTerminal(s.phase)) return;
+    const a = advise(s, this.forecast);
+    if (!a) return;
+    this.advice = a;
+    this.dirty = true;
+    this.renderHintCard();
+    this.renderMapBar();
+    this.announce(this.adviceText(a));
+    document.querySelector<HTMLElement>('#hint-card .btn.primary')?.focus();
+  }
+
+  private renderHintCard(): void {
+    const a = this.advice;
+    const side = this.root.querySelector('.side');
+    document.getElementById('hint-card')?.remove();
+    if (!a || !side) return;
+    const primary = a.intent
+      ? h('button', { class: 'btn small primary', onclick: () => this.showMe() }, t('hint.show'))
+      : a.id === 'endTurn' || a.id === 'noEnergy'
+        ? h('button', { class: 'btn small primary', onclick: () => this.endTurn() }, t('hud.endTurn'))
+        : null;
+    const card = h(
+      'div',
+      { class: `hint-card${a.id === 'witherRisk' ? ' urgent' : ''}`, id: 'hint-card', role: 'note' },
+      h('p', { class: 'hint-title' }, icon(a.id === 'witherRisk' ? 'warn' : 'bulb'), t('hint.title')),
+      h('p', { class: 'hint-text' }, this.adviceText(a)),
+      h('div', { class: 'row' }, h('button', { class: 'btn small', onclick: () => this.closeHint() }, t('hint.close')), primary),
+    );
+    side.prepend(card);
+  }
+
+  /** "Show me": selects the suggested tool and moves the cursor to its tile, without acting. */
+  private showMe(): void {
+    const intent = this.advice?.intent;
+    if (!intent || intent.kind === 'endTurn') return;
+    const i = TOOLS.findIndex((tool) => toolId(tool) === toolIdOf(intent));
+    if (i >= 0) this.selectTool(i);
+    this.setCursor(intent.x, intent.y);
+    document.querySelector('#tools .tool.selected')?.scrollIntoView({ block: 'nearest' });
+    this.renderer?.canvas.focus();
+  }
+
+  private closeHint(): void {
+    if (!this.advice && !document.getElementById('hint-card')) return;
+    this.advice = null;
+    document.getElementById('hint-card')?.remove();
+    this.dirty = true;
+    this.renderMapBar();
+  }
+
+  /** The advice as a sentence, with 1-based coordinates like the inspector. */
+  private adviceText(a: Advice): string {
+    const p = a.params;
+    const x = (a.at?.x ?? 0) + 1;
+    const y = (a.at?.y ?? 0) + 1;
+    const name = p.species ? t(`species.${p.species}` as TranslationKey) : p.building ? t(`building.${p.building}` as TranslationKey) : '';
+    if (a.id === 'witherRisk') {
+      const key: TranslationKey = (p.count ?? 1) > 1 ? 'advice.witherRiskMany' : 'advice.witherRisk';
+      return t(key, { name, x, y, after: p.after ?? 0, limit: p.limit ?? 0, count: p.count ?? 1 });
+    }
+    return t(`advice.${a.id}` as TranslationKey, { name, x, y, gold: p.gold ?? 0 });
   }
 
   // ───────────────────────── tutorial ─────────────────────────
@@ -1128,9 +1482,41 @@ export class App {
     const s = this.state;
     const entries = s?.journal ?? [];
     this.openModal(t('hud.journal'), [
+      ...(s ? this.progressChart(s) : []),
       entries.length ? h('div', { class: 'journal' }, ...entries.map((i) => h('blockquote', {}, t(`journal.${i}` as TranslationKey)))) : h('p', { class: 'muted' }, t('story.p3')),
       this.backButton(),
     ]);
+  }
+
+  /** The restoration / pollution chart of this game (R-11.20), or a note until it exists. */
+  private progressChart(s: GameState): HTMLElement[] {
+    const winRatio = DIFFICULTIES[s.difficulty].winRatio;
+    const m = chartModel(s.history, winRatio);
+    const title = h('h3', { class: 'chart-title' }, t('chart.title'));
+    if (!m) return [title, h('p', { class: 'muted small' }, t('chart.empty'))];
+    const sm = m.summary;
+    return [
+      title,
+      chartElement(m, {
+        aria: t('chart.aria', { turns: sm.turns, from: sm.fromRestored, to: sm.toRestored, pFrom: sm.fromPollution, pTo: sm.toPollution, goal: sm.goal }),
+        restored: t('chart.restored'),
+        pollution: t('chart.pollution'),
+        goal: `${t('chart.goal')} ${sm.goal}%`,
+        turn: t('chart.turn'),
+      }),
+    ];
+  }
+
+  /** Folds a finished game into the local records exactly once (R-10.7). */
+  private recordFinishedGame(s: GameState): RecordUpdate | null {
+    if (!s.outcome) return null;
+    const key = `${s.seed}:${s.difficulty}:${s.outcome.turn}:${s.outcome.result}:${s.outcome.score}`;
+    if (this.recorded?.key === key) return this.recorded.update;
+    const update = recordGame(this.records, s.difficulty, s.outcome);
+    this.records = update.records;
+    writeStore(RECORDS_KEY, JSON.stringify(this.records));
+    this.recorded = { key, update };
+    return update;
   }
 
   private showJournalEntry(i: number): void {
@@ -1142,7 +1528,7 @@ export class App {
 
   private showSettings(): void {
     const st = this.settings;
-    const toggle = (key: 'highContrast' | 'reducedMotion' | 'sound' | 'patterns' | 'tutorial', label: TranslationKey) =>
+    const toggle = (key: 'highContrast' | 'reducedMotion' | 'sound' | 'music' | 'patterns' | 'tutorial', label: TranslationKey) =>
       h(
         'label',
         { class: 'switch' },
@@ -1207,6 +1593,7 @@ export class App {
         toggle('highContrast', 'settings.contrast'),
         toggle('reducedMotion', 'settings.motion'),
         toggle('sound', 'settings.sound'),
+        toggle('music', 'settings.music'),
         toggle('patterns', 'settings.patterns'),
         toggle('tutorial', 'settings.tutorial'),
         h('h3', {}, t('settings.keys')),
@@ -1282,14 +1669,23 @@ export class App {
     const difficulty = s.difficulty;
     const seed = s.seed;
     const artSprites = won ? ['grass', 'shrub', 'tree', 'sanctuary', 'tree', 'shrub', 'grass'] : ['stack', 'ruin', 'stack'];
+    const rec = this.recordFinishedGame(s);
+    const badges = [
+      rec?.bestScore ? h('span', { class: 'end-badge' }, icon('star'), t('end.newBest')) : null,
+      rec?.fewestTurns ? h('span', { class: 'end-badge' }, icon('star'), t('end.newFastest')) : null,
+    ].filter((b): b is HTMLSpanElement => b !== null);
     this.openModal(
       t(won ? 'end.victory' : 'end.defeat'),
       [
         h('div', { class: 'end-art', 'aria-hidden': 'true' }, ...artSprites.map((n) => h('img', { src: spriteDataUrl(n, 3), alt: '' }))),
         h('p', { class: 'lead' }, text),
+        ...(badges.length ? [h('p', { class: 'end-badges' }, ...badges)] : []),
+        ...this.progressChart(s),
         h(
           'dl',
           { class: 'end-stats' },
+          h('dt', {}, t('end.seed')),
+          h('dd', {}, h('code', {}, String(s.seed))),
           h('dt', {}, t('end.turns')),
           h('dd', {}, s.turn),
           h('dt', {}, t('end.restored')),
@@ -1336,6 +1732,9 @@ export class App {
       r.draw(s, {
         cursor: this.cursor,
         ghost,
+        risk: isTerminal(s.phase) ? new Set() : this.risk,
+        hint: this.advice?.at ?? null,
+        lens: this.lens,
         range: rangeFor(s, this.cursor.x, this.cursor.y, tool),
         patterns: this.settings.patterns,
         reducedMotion: this.settings.reducedMotion,
