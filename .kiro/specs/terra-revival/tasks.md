@@ -90,3 +90,44 @@
 - [x] **T9.6** Implement `toolGroup`, `previewSprite`, `allTileInfo`; the renderer's ghost preview and badges; the grouped palette with the tutorial hint; HUD stat icons; the End turn nudge; the title diorama; end-screen art. _(depends T9.5; R-11.8, R-11.10, R-11.11)_
 - [x] **T9.7** Layout fixes: tutorial docked in the side column, toasts bottom-right, dialog focus order, "welcome back" chronicle entry, floaters kept inside the canvas, mobile top bar (icon buttons, 2 × 2 stats plus a progress row). _(R-11.9, R-13.10, R-13.11)_
 - [x] **T9.8** Headless browser pass (Playwright): 1440 × 900 and 390 × 844, high contrast at 200 % without horizontal scroll, Uzbek, keyboard-only play (salvage, undo, end turn, menu), particle canvas empty with reduced motion, no console errors.
+
+
+## Wave 10 — Forecast, advisor and history (core, TDD; the four pairs are independent)
+
+- [ ] 🧪 **T10.1** Write `tests/forecast.prop.test.ts` before the code: Invariant 13 over random reachable states (withered, matured, pollution and outcome equal the real End turn), `null` outside the `action` phase, a deep-frozen input is not mutated, and a hand-built doomed grass next to a stack is reported. _(R-13.14, R-14.8)_
+- [ ] **T10.2** Extract `runResolution` from End turn and implement `core/forecast.ts` on top of it. _(depends T10.1)_
+- [ ] 🧪 **T10.3** Write `tests/advisor.test.ts`: priority (witherRisk → noEnergy → bot move → endTurn), every bot intent kind maps to its advice id, Invariant 14 over random reachable states. _(R-13.13)_
+- [ ] **T10.4** Implement `core/advisor.ts` on the forecast and `greedyIntent`. _(depends T10.3, T10.2)_
+- [ ] 🧪 **T10.5** Write `tests/history.test.ts`: genesis point, one point per resolution (Invariant 15), bounds, version-1 saves migrate, other versions are rejected. _(R-10.5, R-10.6)_
+- [ ] **T10.6** Add `history` to `GameState`, bump the save to version 2 with the migration, record after every resolution, refresh `restored` flags after preparation. _(depends T10.5)_
+- [ ] 🧪 **T10.7** Extend `tests/systems.test.ts` with `building:pulsed`, `stack:emitted` and the acid-rain `tiles`. _(R-11.16, R-11.17)_
+- [ ] **T10.8** Emit them from the Cleansing, Pollution and RandomEvent systems. _(depends T10.7)_
+- [ ] 🧪 **T10.9** Write `tests/stage.test.ts`: `worldProgress`, `worldStage` and the progress keyframes of the palette, `floraStage` / `floraSprite`, `TileInfo.flora.turnsLeft`, and `ui/records.ts`. _(R-11.2, R-11.12, R-11.13, R-10.7)_
+- [ ] **T10.10** Implement them. _(depends T10.9)_
+
+## Wave 11 — Living world and sound (presentation; parallel)
+
+- [ ] 🧪 **T11.1** Extend `tests/fx.test.ts`: butterflies need blossoms and keep to their target, birds appear only with `birds` and cross the map, glints need clean water, weather (rain with tint, motes, swarm) and waves (delay, growth, expiry, at most 40), and the 300-particle budget with everything on. _(R-11.15 – R-11.17)_
+- [ ] **T11.2** Implement them in `render/fx.ts`. _(depends T11.1)_
+- [ ] **T11.3** Sprites: young stages, `risk`, pixel `DIGITS`, lens marks. Renderer: banks, growth stages, forecast badges, hint outline, both lenses, progress palette. _(R-11.13, R-11.14, R-13.12, R-13.14)_
+- [ ] 🧪 **T11.4** Write `tests/music.test.ts` (note ranges, scale per mood, `midiToHz`, mood per stage) and `tests/chart.test.ts` (coordinates, summary, short history). _(R-11.18, R-11.20)_
+- [ ] **T11.5** Implement `ui/music.ts` and `ui/chart.ts`. _(depends T11.4)_
+
+## Wave 12 — Integration (UI)
+
+- [ ] **T12.1** Hint card with "Show me" and the map outline; lens control; `hint` and `lens` key actions, keeping existing custom bindings. _(R-13.12, R-13.13, R-13.5)_
+- [ ] **T12.2** Forecast in the HUD, on End turn and in the inspector; turn-report chips; stage banner, chronicle entry and announcement. _(R-13.14, R-11.19, R-11.12)_
+- [ ] **T12.3** Chart on the end screen and in the Journal; records in the New game dialog and "new record" badges; the world seed. _(R-11.20, R-10.7)_
+- [ ] **T12.4** Music setting and wiring; FX wiring for life, weather and waves. _(R-11.15 – R-11.18)_
+- [ ] **T12.5** Touch: tap to preview, tap again to act. _(R-2.8)_
+
+## Wave 13 — Languages and offline (parallel)
+
+- [ ] 🧪 **T13.1** Write `tests/translit.test.ts` (word pairs, protected spans, no Latin letters left outside protected spans in any Uzbek Cyrillic string) and extend `tests/i18n.test.ts` to every dictionary. _(R-12.1, R-12.3, R-12.4)_
+- [ ] **T13.2** Implement `i18n/translit.ts`, `i18n/ru.ts`, four-language switching and browser detection. _(depends T13.1; R-12.2, R-12.5)_
+- [ ] **T13.3** PWA: manifest, icons rendered from the sprites, `public/sw.js`, production-only registration. _(R-14.7)_
+
+## Wave 14 — Verification
+
+- [ ] **T14.1** `npm run typecheck && npm test && npm run build` green locally and in CI.
+- [ ] **T14.2** Headless browser pass at 1440 × 900 and 390 × 844: forecast badge and inspector line on a doomed plant, hint "Show me", both lenses, turn chips and stage banner, weather and waves (particles on; none with reduced motion), growth stages, chart on the end screen, records, touch preview, all four languages, offline reload through the service worker, no console errors.

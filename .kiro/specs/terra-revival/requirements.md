@@ -35,8 +35,11 @@ Glossary:
 | Restored tile | A `soil` tile with pollution 0 that holds mature flora or a building, or a `water` tile with pollution 0. |
 | Restorable tile | Any `soil`, `ruin` or `water` tile. `rock` and `stack` tiles are not counted. |
 | Restoration ratio | restored tiles ÷ restorable tiles, in [0, 1]. |
+| Progress | restoration ratio ÷ the difficulty's win ratio, clamped to [0, 1]. 1 means the goal is reached. |
+| World stage | *Industrial Collapse* (progress < 0.45), *Transition* (0.45 ≤ progress < 0.9), *Ecological Revival* (progress ≥ 0.9). |
 | Turn | One full cycle: Preparation → Action → Resolution. |
 | Transaction | One player action with a unique id, applied at most once. |
+| Forecast | The exact result of the coming resolution, computed on a copy of the state without changing the game. |
 
 ---
 
@@ -66,6 +69,7 @@ with mouse, touch or keyboard.
 - **R-2.5** IF the player targets a coordinate outside the grid, THEN THE SYSTEM SHALL reject the action with reason `out_of_bounds`.
 - **R-2.6** THE SYSTEM SHALL allow the full game to be played with the keyboard alone (cursor movement, tool selection, activation, end turn, undo, menus).
 - **R-2.7** THE SYSTEM SHALL group the action palette by purpose (Restore, Plant, Build, Manage) under visible headings, and WHEN a tutorial step asks for a specific action, THE SYSTEM SHALL mark that action with a dashed outline and scroll it into view inside the palette without scrolling the page.
+- **R-2.8** WHERE the pointer is touch or pen AND a tool is selected, WHEN the player taps a tile other than the cursor tile, THE SYSTEM SHALL only move the cursor there and show the preview and reason; WHEN the player taps the cursor tile again, THE SYSTEM SHALL apply the action (tap to preview, tap again to act).
 
 ## 3. Resources: Gold and Energy
 
@@ -163,12 +167,15 @@ conditions that match the chosen difficulty.
 - **R-10.1** WHEN a game starts, an action is applied, an action is undone or a turn enters the `action` phase, THE SYSTEM SHALL autosave the game state to browser storage.
 - **R-10.2** WHEN the player chooses Continue, THE SYSTEM SHALL restore the saved state exactly (a save→load round trip is lossless).
 - **R-10.3** IF browser storage is unavailable or the save is corrupt or from an incompatible version, THEN THE SYSTEM SHALL keep running, hide Continue and not crash.
-- **R-10.4** THE SYSTEM SHALL persist settings (language, scale, contrast, motion, sound, key bindings) and unlocked achievements separately from the game save.
+- **R-10.4** THE SYSTEM SHALL persist settings (language, scale, contrast, motion, sound, music, key bindings) and unlocked achievements separately from the game save.
+- **R-10.5** WHEN a resolution ends, THE SYSTEM SHALL append the resolved turn, the restoration ratio and the average pollution to the game's history; a new game SHALL start with one history point for turn 0.
+- **R-10.6** IF a save of the previous compatible version (version 1) is loaded, THEN THE SYSTEM SHALL migrate it to the current version (with a one-point history) instead of discarding it.
+- **R-10.7** WHEN a game ends, THE SYSTEM SHALL update the local records of its difficulty (games played, wins, best Harmony score of a win, fewest turns to win), show them in the New game dialog, and say on the end screen when a record was beaten.
 
 ## 11. Presentation, narrative and feedback
 
 - **R-11.1** THE SYSTEM SHALL render tiles and objects as crisp pixel art (no smoothing) from a restricted palette that uses hue shifting for shadows and highlights.
-- **R-11.2** THE SYSTEM SHALL blend the world palette from *Cyberpunk Chrome* to *Autumn Harvest* to *Spring Blossom* as the restoration ratio grows.
+- **R-11.2** THE SYSTEM SHALL blend the world palette from *Cyberpunk Chrome* to *Autumn Harvest* to *Spring Blossom* by progress toward the goal: Chrome at progress 0, Autumn at 0.45, Spring from 0.9, so that every victory, on every difficulty, ends in full Spring Blossom.
 - **R-11.3** WHEN any game event happens, THE SYSTEM SHALL publish it on an event bus; the HUD, event log, audio and achievements SHALL react only through subscriptions, never by being called from game logic.
 - **R-11.4** THE SYSTEM SHALL show an opening story, a step-by-step tutorial for the first turns that can be skipped, and Guardian's journal entries at milestones.
 - **R-11.5** THE SYSTEM SHALL unlock achievements (e.g. First Sprout, Sun Catcher, Stack Sealed, Clean Waters, Forest Guardian) and show them in the menu.
@@ -178,12 +185,23 @@ conditions that match the chosen difficulty.
 - **R-11.9** WHEN a saved game is continued, THE SYSTEM SHALL greet the Guardian in the chronicle with the current turn instead of reporting a turn's income.
 - **R-11.10** WHILE the game is in the `action` phase with no Energy left, THE SYSTEM SHALL mark the End turn button with a soft glow, or a static ring when reduced motion is on.
 - **R-11.11** THE SYSTEM SHALL open with a title diorama that tells the arc of the game from left to right (toxic stack and ruin → sealer and scrubber → solar and wind → grass, shrub and trees) over ground that blends the three world palettes.
+- **R-11.12** WHEN progress crosses a world-stage boundary (Industrial Collapse → Transition at 0.45, Transition → Ecological Revival at 0.9), THE SYSTEM SHALL announce the new stage with a banner over the map, a chronicle entry and a screen-reader announcement.
+- **R-11.13** THE SYSTEM SHALL draw every plant in three growth stages — seedling (growth below one third of its maturation time), young, and mature — so growth is visible every turn, and the inspector SHALL name the stage and the turns left until maturity.
+- **R-11.14** THE SYSTEM SHALL draw banks where water meets land: a light foam edge on the water side and a dark wet edge on the land side.
+- **R-11.15** WHERE reduced motion is off, THE SYSTEM SHALL show ambient life that grows with the ecosystem: butterflies around mature shrubs and trees, birds crossing the valley once progress reaches 0.25, and glints on clean water.
+- **R-11.16** WHERE reduced motion is off, WHEN a random event happens, THE SYSTEM SHALL show it as weather: acid-rain streaks with a violet dimming and splashes on the tiles it hit, a warm glow with rising motes on a sunny day, a swarm of butterflies for pollinators, and gold sparks at the Sanctuary for a scrap caravan.
+- **R-11.17** WHERE reduced motion is off, WHEN a turn resolves, THE SYSTEM SHALL show cause and effect on the map: a solid cyan square wave from every working scrubber and purifier out to its radius, followed by a dashed red wave from every unsealed stack out to three tiles (cleansing before emission, R-6.6).
+- **R-11.18** WHERE music is enabled, THE SYSTEM SHALL play a quiet generative soundtrack whose harmony follows the world stage (a low minor drone in Industrial Collapse, warm modal pads in Transition, bright major-pentatonic pads and bells in Ecological Revival), crossfading when the stage changes and pausing while the page is hidden. Music SHALL be a setting separate from sound effects.
+- **R-11.19** WHEN a new turn starts, THE SYSTEM SHALL show next to Gold, Energy, restoration and average pollution how much each changed since the previous turn, with an up or down arrow and a good or bad color, until the next action or for 6 seconds.
+- **R-11.20** WHEN a game ends, and in the Journal, THE SYSTEM SHALL show a chart of restoration and average pollution per turn together with the goal line, telling the lines apart by style (solid, dashed, dotted) and a text legend as well as by color, with a text summary for screen readers and the world seed.
 
 ## 12. Localization
 
-- **R-12.1** THE SYSTEM SHALL use English as the primary language and provide a complete Uzbek (Latin script) translation.
+- **R-12.1** THE SYSTEM SHALL use English as the primary language and provide complete Uzbek (Latin script), Uzbek (Cyrillic script) and Russian translations.
 - **R-12.2** WHEN the player switches language, THE SYSTEM SHALL re-render every visible text immediately without restarting the game.
-- **R-12.3** THE SYSTEM SHALL fail the build (type check) if any English string key is missing from the Uzbek dictionary.
+- **R-12.3** THE SYSTEM SHALL fail the build (type check) if any English string key is missing from the Uzbek or Russian dictionary.
+- **R-12.4** THE SYSTEM SHALL derive Uzbek Cyrillic from the Uzbek Latin dictionary by rule-based transliteration (o'→ў, g'→ғ, sh→ш, ch→ч, yo/yu/ya/ye→ё/ю/я/е, word-initial e→э, q→қ, h→ҳ, x→х, the tutuq belgisi ' → ъ), leaving placeholders, key names and the brand name untouched, so both scripts can never drift apart.
+- **R-12.5** WHEN the game starts for the first time, THE SYSTEM SHALL choose the language from the browser (Uzbek Cyrillic, Uzbek, Russian, otherwise English); the language button SHALL cycle through all four languages and the Settings list SHALL name each language in its own script.
 
 ## 13. Non-functional: accessibility and cognitive openness
 
@@ -198,6 +216,9 @@ conditions that match the chosen difficulty.
 - **R-13.9** THE SYSTEM SHALL draw every interface icon (buttons, reasons, log marks, inspector states, achievements, arrow key caps) from its own pixel icon set colored by the surrounding text, and SHALL NOT depend on emoji or symbol fonts that may be missing on the player's system.
 - **R-13.10** WHEN tutorial tips or achievement toasts are shown, THE SYSTEM SHALL place them outside the map (tips docked above the action palette, toasts in a bottom corner) so they never cover map tiles or the top-bar controls.
 - **R-13.11** WHEN a dialog opens, THE SYSTEM SHALL move focus to its most meaningful control: the selected option, else an explicitly marked field, else the primary action.
+- **R-13.12** THE SYSTEM SHALL offer map lenses, switched by a control next to the map and by a key (default L): *Normal*; *Pollution* — the pollution value of every polluted restorable tile in a pixel font on a dark backing, plus the reach of every unsealed stack; *Restoration* — on every restorable tile a mark for what it still needs: restored (check), plant here (sprout), turns until its plant matures (number), needs cleaning (cross); tiles that never count are dimmed.
+- **R-13.13** WHEN the player asks for a hint (button or key, default H), THE SYSTEM SHALL give one piece of advice in words, chosen in this order: a plant that will wither this turn and how to help it; no Energy left, so end the turn; the move the scripted strategy of R-9.5 would make next; otherwise end the turn. WHERE the advice names a move, a "Show me" control SHALL select that tool and move the cursor to that tile without acting, and the tile SHALL be outlined on the map until the player acts or closes the hint. Every suggested move SHALL be legal at that moment.
+- **R-13.14** WHILE the game is in the `action` phase, THE SYSTEM SHALL show the forecast of the coming resolution: a warning badge on every plant that will wither and a line in the inspector saying why, every tile's pollution after the resolution in the inspector, the forecast restoration on the progress bar, and on End turn the number of plants that will wither, a star when ending the turn wins, and a "last turn" mark when the turn limit is reached.
 
 ## 14. Non-functional: quality and architecture
 
@@ -207,3 +228,5 @@ conditions that match the chosen difficulty.
 - **R-14.4** THE SYSTEM SHALL compile under TypeScript `strict` mode with zero errors and pass all tests before release.
 - **R-14.5** THE SYSTEM SHALL render the map at 60 fps on a mid-range laptop by redrawing only when state, cursor or animation changes, and SHALL run the particle layer at no more than 30 fps and only while particles or ambient sources exist.
 - **R-14.6** THE SYSTEM SHALL work in current desktop and mobile browsers at viewport widths down to 360 px.
+- **R-14.7** THE SYSTEM SHALL be installable as a Progressive Web App (a manifest with 192 px and 512 px icons, one of them maskable) and SHALL keep working offline after the first visit, through a service worker that serves page navigations network-first and other same-origin files cache-first; the service worker SHALL be registered only in production builds.
+- **R-14.8** THE SYSTEM SHALL compute the forecast (R-13.14) by running the very function End turn uses for the resolution on a copy of the state, and SHALL prove with property-based tests that the forecast equals the real resolution for random reachable states and that every hint (R-13.13) is a legal move.

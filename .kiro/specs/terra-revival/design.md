@@ -31,17 +31,23 @@ src/
     state.ts               GameState, createGame, cloneState
     selectors.ts           derived read-only views (ratio, tile info, costs)
     systems/*.ts           ECS systems (§3.3)
-    actions.ts             Action union, quote (validation + price), applyAction
-    save.ts                versioned (de)serialization
-    sim/bot.ts             scripted strategies for balance simulation
+    actions.ts             Action union, quote (validation + price), applyAction,
+                           runResolution (shared by End turn and the forecast)
+    forecast.ts            forecastResolution: the coming resolution on a copy (§3.8)
+    advisor.ts             advise: one legal, explained next move (§3.8)
+    save.ts                versioned (de)serialization + v1 → v2 migration
+    sim/bot.ts             scripted strategies for balance simulation and hints
     grid.ts                coordinates, areas, occupant index
-  i18n/                    en.ts (source of keys), uz.ts, index.ts
-  render/                  color (WCAG, hue shift), palette, sprites, renderer,
-                           fx (particle simulation + layer)
+  i18n/                    en.ts (source of keys), uz.ts, ru.ts, translit.ts
+                           (Uzbek Latin → Cyrillic), index.ts
+  render/                  color (WCAG, hue shift), palette, sprites (incl. pixel
+                           digits), renderer, fx (particle simulation + layer)
   ui/                      app (store, dispatch, undo, autosave, views), dom,
                            icons (pixel SVG icon set), settings, theme,
-                           achievements, audio, storage
-  main.ts                  entry point
+                           achievements, audio, music (generative soundtrack),
+                           records, chart, storage
+  main.ts                  entry point, service-worker registration (production)
+public/                    manifest.webmanifest, sw.js, icons/ (PWA, §7.9)
 tests/                     *.test.ts and *.prop.test.ts
 ```
 
@@ -111,7 +117,10 @@ one another; they communicate only through state and emitted events.
 | `VictorySystem` | — | resolution | Win / time / collapse checks (R-9). |
 
 Resolution order: Cleansing → Pollution → Growth → Restoration → Victory
-(R-6.6). Preparation order: turn++ → Economy → Energy (with Upkeep) → RandomEvent.
+(R-6.6), implemented once as `runResolution(ctx)`; End turn and the
+forecast (§3.8) both call it. After it, End turn appends a history point
+(§3.7). Preparation order: turn++ → Economy → Energy (with Upkeep) →
+RandomEvent → refresh `restored` flags (so acid rain shows at once).
 A new game starts directly in turn 1's `action` phase: genesis resources stand in for
 turn 1's preparation.
 
@@ -128,7 +137,11 @@ Event types (discriminated union on `type`):
 `building:toggled`, `building:unpowered`, `tile:salvaged`, `tile:cleaned`,
 `flora:planted`, `flora:matured`, `flora:withered`, `flora:spread`,
 `tile:restored`, `ecosystem:milestone` (= `EV_ECOSYSTEM_RESTORED`),
-`stack:sealed`, `event:random`, `action:rejected`, `game:won`, `game:lost`.
+`stack:sealed`, `event:random`, `action:rejected`, `game:won`, `game:lost`,
+and, for the resolution waves of R-11.17, `building:pulsed {building,
+x, y, radius}` (every working cleanser, emitted by CleansingSystem) and
+`stack:emitted {x, y, radius}` (every unsealed stack, PollutionSystem).
+`event:random` carries `tiles` — the tiles acid rain hit (empty otherwise).
 
 ### 3.5 Turn state machine (R-1.2)
 
@@ -180,7 +193,7 @@ sequenceDiagram
 
 ```ts
 interface GameState {
-  version: 1; seed: number; difficulty: 'gentle'|'balanced'|'hard';
+  version: 2; seed: number; difficulty: 'gentle'|'balanced'|'hard';
   width: number; height: number; turn: number; phase: Phase;
   world: World; tiles: Entity[];
   gold:   { balance; earned; spent };
@@ -193,8 +206,47 @@ interface GameState {
   outcome: null | { result: 'victory'|'defeat'; reason: string };
   stats: { salvaged; planted; built; withered; spread; restoredEver; bountyPaid; milestoneGold; sealed };
   journal: string[];          // milestone keys
+  history: { turn; ratio; pollution }[]; // R-10.5: turn 0, then one point per resolution
 }
 ```
+
+`history[i].turn` is `i`: a point for genesis (turn 0) and one appended after
+every resolution, with `ratio` rounded to 3 and `pollution` to 1 decimal so
+saves stay small. A version-1 save is migrated on load by adding a
+one-point history for the last resolved turn (R-10.6); anything else that
+is not version 2 is rejected (R-10.3).
+
+### 3.8 Forecast and advisor (R-13.13, R-13.14, R-14.8)
+
+```ts
+forecastResolution(s): null | {
+  withered: { x, y, species }[];  matured: { x, y, species }[];
+  pollution: number[];            // every tile after the resolution, row-major
+  ratio; averagePollution;        // after the resolution
+  outcome: Outcome | null;        // victory / defeat this turn
+}
+```
+
+It returns `null` outside the `action` phase. Otherwise it clones the state
+and runs `runResolution` on the clone with a private event sink and a copy
+of the PRNG state, then reads the answer from the clone and the events. The
+live state, its PRNG and its event stream are never touched, and because the
+code path is the one End turn runs, the forecast is exact — including
+withering after bioremediation — rather than an approximation. The coming
+preparation (and so the next random event) is deliberately not forecast.
+
+```ts
+advise(s, forecast): null | { id, intent: Intent | null, at: {x, y} | null, params }
+```
+
+Priority: (1) `witherRisk` — the first plant in `forecast.withered`, with a
+manual cleanup of its tile as the move when that is legal; (2) `noEnergy`
+— Energy is 0, so end the turn; (3) the greedy bot's next intent
+(`greedyIntent`, the strategy that wins every balance seed, R-9.5),
+translated by kind: `seal`, `energy` (solar / wind), `battery`, `recycler`,
+`scrubber`, `purifier`, `salvage`, `plant`, `cleanup`, `upgrade`,
+`relocate` (demolish a scrubber whose area is clean); (4) `endTurn`. The
+UI turns `id` + `params` into a sentence; `intent` feeds "Show me".
 
 ## 4. Economy formulas
 
@@ -381,6 +433,9 @@ Invariants (checked after **every** step of every script):
 10. **Save round trip.** `load(save(s)) ≡ s` for any reachable state.
 11. **Restoration bounty once.** Total restoration bounty paid ≤ 2 · restorable tiles; milestone Gold ≤ 20·(1+2+3+4).
 12. **Phase machine.** After any script the phase is `action`, `victory` or `defeat`; actions in terminal states are rejected.
+13. **Forecast is exact.** For any reachable `action`-phase state, the forecast's withered and matured plants equal the `flora:withered` / `flora:matured` events the real End turn emits before the next preparation, its pollution array equals the tiles' pollution right after the real resolution, and its outcome equals the real outcome; forecasting never mutates the state.
+14. **Hints are legal.** For any reachable `action`-phase state, `advise` returns advice whose move, if any, `quote` accepts.
+15. **History.** `history.map(p => p.turn)` is `0, 1, …, n` where `n` is the number of resolutions so far; every ratio is in [0, 1] and every pollution in [0, 100].
 
 Formula properties (`formulas.prop.test.ts`): `I_gold` is linear
 (`I(a+b) − I(0) = (I(a) − I(0)) + (I(b) − I(0))`); `C(type, L+1) ≥ C(type, L)`
@@ -397,7 +452,11 @@ a contrast test over theme tokens (R-13.1), an i18n completeness test
 and presentation tests for the pure parts of the UI: particle budget,
 expiry, opacity bounds and ambient sources (`fx.test.ts`), icon maps and
 their SVG paths (`icons.test.ts`), sprite maps, palette groups, placement
-previews and `allTileInfo ≡ tileInfo` (`polish.test.ts`).
+previews and `allTileInfo ≡ tileInfo` (`polish.test.ts`), the forecast and
+the advisor (`forecast.prop.test.ts`, `advisor.test.ts`: Invariants 13, 14),
+history and save migration (`history.test.ts`: Invariant 15), world stage,
+growth stages and records (`stage.test.ts`), music data (`music.test.ts`),
+charts (`chart.test.ts`) and transliteration (`translit.test.ts`).
 
 ## 7. Rendering and UI
 
@@ -405,8 +464,11 @@ previews and `allTileInfo ≡ tileInfo` (`polish.test.ts`).
 - Sprites are small character maps (`'..aab..'`) rasterised once per palette
   into offscreen canvases. Shadows are hue-shifted toward blue/violet,
   highlights toward yellow/orange (R-11.1).
-- Palette = interpolation between three keyframes by restoration ratio
-  (0 → Chrome, 0.35 → Autumn, 0.7+ → Spring) (R-11.2).
+- Palette = interpolation between three keyframes by *progress*
+  `p = min(1, ratio / winRatio)`: 0 → Chrome, 0.45 → Autumn, 0.9+ → Spring
+  (R-11.2). The same thresholds define the world stage (`worldStage(p)`:
+  collapse / transition / revival) used by announcements and music, so on
+  every difficulty the valley is in full Spring when the game is won.
 - Pollution bands draw hatch overlays: toxic = cross-hatch + hazard glyph,
   polluted = diagonal lines, recovering = dots, clean = none (R-13.2).
   Unpowered buildings show a "zZ" glyph; disabled ones a pause glyph.
@@ -437,8 +499,22 @@ canvas with the same pixel size. `render/fx.ts` splits it in two:
 | smog | each unsealed stack, one puff per 0.26 s, ≤ 8 per stack | rises, slows, grows 1→3 px | 1.8–2.8 s |
 | spark / leaf / drop | bus events (salvage, build, seal / plant, mature, spread, restore / cleanup) | radial burst under gravity | 0.5–1.4 s |
 | petal | `ecosystem:milestone` (45), `game:won` (160) | falls with sway across the map | 4–7 s |
+| butterfly | mature shrubs and trees, target `min(10, ⌊blossoms / 2⌋)`; 14 crossing the map for `pollinators` | flutters within ±0.9 × ±0.5 tiles of its home, wings flap every 0.12 s (3 × 2 px) | 6–10 s |
+| bird | progress ≥ 0.25: a flock of 1–3 every 8–16 s | crosses the top 60 % of the map at 1.4–2 tiles/s, wings flap every 0.2 s (5 × 3 px) | until off-map |
+| glint | clean water tiles, target `min(6, ⌊tiles / 4⌋)` | twinkles in place (1 px) | 0.5–1.1 s |
+| rain | `event:random` acid rain: 90 streaks spread over 1.2 s, `acid` splashes on the hit tiles, violet tint 0.25 for 2.4 s | falls at 10 tiles/s, slanted (1 × 3 px) | until off-map |
+| mote | `event:random` sunny: 40 golden motes, warm tint 0.16 for 2.4 s | rises slowly | 2–3.2 s |
 
-Budget: at most `FX_MAX = 240` particles; further spawns are dropped.
+Resolution waves (R-11.17) are a separate list of at most 40 pulses:
+`{ kind: 'clean' | 'emit', x, y, radius, age, life = 0.7 s }`, created from
+`building:pulsed` (at once) and `stack:emitted` (0.35 s later, by starting
+`age` at −0.35). A pulse is a square outline — the Chebyshev area the
+mechanic really covers — growing from the tile to `radius + ½` tiles and
+fading out; `clean` is a solid cyan line, `emit` a dashed red one, so the
+two differ in shape as well as color. A single tint slot (color, alpha,
+life) fades in over 0.2 s and out over the second half of its life.
+
+Budget: at most `FX_MAX = 300` particles; further spawns are dropped.
 Opacity is `min(age / 0.25, (life − age) / (0.35 · life))`, clamped to [0, 1].
 Ambient sources come from `sourcesFromState(state)` (the `EcoValue.restored`
 flags and unsealed `ToxicSource`s) after every state change. With reduced
@@ -459,3 +535,115 @@ motion on, the layer is disabled: no particles, no frames, an empty canvas.
 - Tutorial tips are docked at the top of the side column; toasts rise from
   the bottom-right corner. The palette is grouped by `toolGroup(tool)`
   (`restore`, `plant`, `build`, `manage`).
+
+
+### 7.3 Lenses (R-13.12)
+
+`lens: 'normal' | 'pollution' | 'restoration'` is UI state (not saved),
+cycled by the lens control or the `lens` key (default L). The renderer draws
+the overlay after tiles and before the cursor:
+
+- **Pollution**: every restorable tile with pollution > 0 gets its value in a
+  3 × 5 pixel-digit font (`DIGITS` in `sprites.ts`, 1 px spacing, up to three
+  digits = 11 px) centred on a 13 × 7 px dark backing (`rgba(12,14,20,0.82)`,
+  text `#ffffff` — contrast far above 4.5 : 1 on any tile). Every unsealed
+  stack shows its reach as a dashed outline of its Chebyshev-3 area.
+- **Restoration**: on restorable tiles — restored → check badge; clean soil
+  with nothing on it → sprout mark ("plant here"); a growing plant on clean
+  soil → the turns until it matures in the digit font; polluted → cross
+  badge (clean it first). Rock and stack tiles are dimmed (`rgba(0,0,0,0.45)`)
+  because they never count.
+
+`TileInfo.flora` carries `stage` and `turnsLeft = ⌈(maturation − growth) / g⌉`
+where `g` is 2 next to clean water, else 1 (R-7.3).
+
+### 7.4 Living world (R-11.13 – R-11.17, R-13.14)
+
+- Growth stages: `floraStage` = `seedling` while `growth < maturation / 3`,
+  `young` until mature, then `mature`; sprites `<species>0`, `<species>1`,
+  `<species>`.
+- Banks: for each orthogonal pair of water / non-water tiles the water side
+  gets a 1 px foam line (`shade(water, +0.35)`) and the land side a 1 px wet
+  line (`shade(land, −0.3)`), both hue-shifted like all shading.
+- Forecast marks: a 7 × 7 warning-triangle sprite (`risk`) in the top-left
+  corner of every plant in `forecast.withered`, blinking every 0.5 s unless
+  reduced motion is on; the hint target gets a dashed focus-color outline
+  whose dashes march (static with reduced motion).
+- HUD: the progress bar shows a hatched segment from the current to the
+  forecast ratio; End turn shows `warn + n` when n plants will wither, a
+  star when `forecast.outcome` is a victory, and a "last turn" chip when
+  `turn = turnLimit`. The inspector adds "after this turn: v" (with an up or
+  down arrow) and, for a doomed plant, "will wither: pollution v > limit".
+
+### 7.5 Turn report and stage banner (R-11.12, R-11.19)
+
+When End turn succeeds and the game goes on, the store compares the state
+before and after: `Δgold`, `Δenergy`, `Δrestored %` and `Δaverage pollution`
+(both rounded before subtracting) appear as chips beside the values — an
+up / down arrow icon plus color, where "good" means more Gold, Energy and
+restoration but *less* pollution — for 6 s or until the next action. If
+`worldStage(progress)` differs before and after, a banner with the stage
+name and one line of flavour text crosses the map (fades only, 2.8 s; static
+for 2.8 s with reduced motion), a chronicle entry is added and the live
+region announces it.
+
+### 7.6 Music (R-11.18)
+
+`ui/music.ts` shares the audio context of `ui/audio.ts` and never touches
+game state: the store calls `music.setMood(worldStage(progress))` (title
+screen: `transition`; victory: `revival`). Pure data, unit-tested:
+
+| Mood | Chords (MIDI, one every) | Low-pass | Bell notes (chance per 0.5 s) |
+|---|---|---|---|
+| collapse | Am, F, Dm, Em voicings from A2 (8 s) | 700 Hz | A-minor pentatonic (0.10) |
+| transition | Dsus2, C, Am7, G6 (7 s) | 1300 Hz | D-dorian pentatonic (0.22) |
+| revival | Cmaj9, Fmaj7, Am7, G6 (6 s) | 2400 Hz | C-major pentatonic (0.34) |
+
+Pads are two detuned oscillators per chord note (triangle + sine) with a
+1.6 s attack and 2.4 s release; bells are sine plucks with a 1.4 s decay
+into a feedback delay (0.33 s, feedback 0.3). The music bus sits at gain
+0.07, crossfades 3 s when the mood changes, and the context is suspended
+while `document.hidden`. A 250 ms scheduler looks one second ahead on the
+audio clock, so timing does not depend on the frame rate.
+
+### 7.7 Charts and records (R-10.7, R-11.20)
+
+`ui/chart.ts` turns `history` into an inline SVG (viewBox 320 × 150, 28 px
+left / 22 px bottom margins): restoration % as a solid line with round
+joints, average pollution as a dashed line, the goal as a dotted line, all
+on 0–100 % with the turn axis 0…n. `chartModel(history, winRatio)` returns
+the path data and a text summary (`role="img"` + `aria-label`); it is pure
+and unit-tested. With fewer than two points the chart says it needs another
+turn. `ui/records.ts` keeps `{ played, wins, bestScore, fewestTurns }` per
+difficulty in `localStorage` (`terra-revival:records`), parsed defensively;
+`recordGame` returns which records a finished game beat.
+
+### 7.8 Localization pipeline (R-12.1 – R-12.5)
+
+`Lang = 'en' | 'uz' | 'uz-Cyrl' | 'ru'`. `en.ts` defines the keys; `uz.ts`
+and `ru.ts` are typed `Record<TranslationKey, string>`, so a missing key
+fails the type check. `uz-Cyrl` is `translit(uz)`: a longest-match rule
+table over lower/upper case — `o'`/`g'` (with `'`, `ʻ`, `‘` or `’`) → `ў`/`ғ`,
+`sh ch` → `ш ч`, `yo yu ya ye` → `ё ю я е` (except `yo'` → `йў`), `e` → `э`
+at the start of a word, `ts` + `iya` → `ция`, then single letters, and a
+remaining apostrophe → `ъ`. Protected spans are copied as they are:
+`{placeholders}`, the brand *Terra Revival*, key names (`Enter`, `Esc`, a
+lone capital letter such as `E` or `Z`), and anything already in Cyrillic.
+Russian strings avoid number agreement by putting counts after a colon or
+dash ("Ходов: {turns}"). The first language comes from `navigator.language`.
+
+### 7.9 Progressive Web App (R-14.7)
+
+`public/manifest.webmanifest` (name, short name, `display: standalone`,
+`start_url: "./"`, theme `#0f1418`) lists 192 px, 512 px and a maskable
+512 px icon rendered from the pixel sprites. `public/sw.js`:
+
+- install: pre-cache `./`, `index.html`, the manifest and icons; activate:
+  delete caches of older versions, claim clients;
+- navigations: network first, fall back to the cached page when offline;
+- other same-origin GET requests: cache first, then network (and store the
+  response), keeping at most 60 entries;
+
+`main.ts` registers `./sw.js` only when `import.meta.env.PROD` and the
+browser supports service workers, so the Vite dev server is unaffected.
+Relative URLs keep it working under the GitHub Pages sub-path.
